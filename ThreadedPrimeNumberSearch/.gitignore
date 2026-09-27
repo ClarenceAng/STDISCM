@@ -1,0 +1,6 @@
+*.exe
+*.o
+*.obj
+*.pdb
+*.ilk
+prime_search

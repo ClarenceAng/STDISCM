@@ -1,0 +1,4 @@
+# threads
+x=4
+# range
+y=1000

@@ -1,0 +1,13 @@
+{
+    "configurations": [
+        {
+            "name": "MinGW-w64 g++ (C++20)",
+            "compilerPath": "${env:LOCALAPPDATA}/Programs/mingw64/bin/g++.exe",
+            "compilerArgs": ["-pthread"],
+            "cStandard": "c17",
+            "cppStandard": "c++20",
+            "intelliSenseMode": "windows-gcc-x64"
+        }
+    ],
+    "version": 4
+}
