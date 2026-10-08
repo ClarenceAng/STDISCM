@@ -1,46 +1,68 @@
 #pragma once
 
-// Creates, starts and joins the worker threads for both division schemes.
-
-#include <atomic>
-#include <exception>
-#include <stdexcept>
-#include <string>
+#include <condition_variable>
+#include <cstdlib>
+#include <iostream>
+#include <mutex>
 #include <thread>
 #include <vector>
 
-// Runs work(threadId) on `count` new threads, with ids 1 .. count, and joins
-// them all.
-//
-// Each thread waits at a start gate until all `count` threads exist, so they
-// begin together. There is no limit on `count` except what the operating
-// system allows. If the system refuses to create a thread, the threads already
-// created leave without doing any work and a std::runtime_error says how many
-// could be created. Running with only some of the threads is not an option:
-// divisibility testing would wait forever at its barrier for the missing ones.
-template <typename Work>
-void runThreads(unsigned count, Work work) {
-    enum Gate : int { Closed, Open, Cancelled };
-    std::atomic<int> gate{Closed};
+using namespace std;
 
-    std::vector<std::thread> workers;
-    workers.reserve(count);
+// the threads wait at this gate until all of them have been created
+// 0 = wait, 1 = start, 2 = cancelled (couldn't create all the threads)
+int gateState = 0;
+mutex gateMutex;
+condition_variable gateChanged;
+
+void (*threadWork)(int) = nullptr;  // the function every thread runs
+
+void threadMain(int threadId) {
+    unique_lock<mutex> lock(gateMutex);
+    while (gateState == 0) {
+        gateChanged.wait(lock);
+    }
+    bool start = (gateState == 1);
+    lock.unlock();
+
+    if (start) threadWork(threadId);
+}
+
+// makes `count` threads that each run work(threadId) with ids 1 to count, then joins them
+// nobody starts until every thread exists, so they all start together
+// if not all threads can be created, the ones already made quit and the program exits with an error
+// (running with fewer threads wouldn't work, divisibility testing would wait at the barrier forever)
+void runThreads(int count, void (*work)(int)) {
+    threadWork = work;
+    gateState = 0;
+
+    vector<thread> threads;
+    threads.reserve(count);
     try {
-        for (unsigned i = 0; i < count; ++i) {
-            workers.emplace_back([&gate, &work, threadId = i + 1] {
-                gate.wait(Closed);
-                if (gate.load() == Open) work(threadId);
-            });
+        for (int i = 0; i < count; i++) {
+            threads.push_back(thread(threadMain, i + 1));
         }
-    } catch (const std::exception& error) {
-        gate.store(Cancelled);
-        gate.notify_all();
-        for (auto& worker : workers) worker.join();
-        throw std::runtime_error("the system could only create " + std::to_string(workers.size()) + " of the " +
-                                 std::to_string(count) + " threads asked for (" + error.what() + ")");
+    } catch (exception& e) {
+        gateMutex.lock();
+        gateState = 2;
+        gateMutex.unlock();
+        gateChanged.notify_all();
+
+        for (int i = 0; i < (int)threads.size(); i++) {
+            threads[i].join();
+        }
+        cout << flush;
+        cerr << "\nError: the system could only create " << threads.size() << " of the " << count
+             << " threads asked for (" << e.what() << ")" << endl;
+        exit(1);
     }
 
-    gate.store(Open);
-    gate.notify_all();
-    for (auto& worker : workers) worker.join();
+    gateMutex.lock();
+    gateState = 1;
+    gateMutex.unlock();
+    gateChanged.notify_all();
+
+    for (int i = 0; i < count; i++) {
+        threads[i].join();
+    }
 }

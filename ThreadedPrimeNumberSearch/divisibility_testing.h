@@ -1,81 +1,63 @@
 #pragma once
 
-// division = divisibility: the search is linear, numbers 2, 3, ..., limit are
-// tested one at a time. For each number n, the candidate divisors
-// 2 .. floor(sqrt(n)) are cut into one contiguous block per thread and all
-// threads test their block at once. A std::barrier keeps the threads in
-// lock-step: nobody starts n + 1 until every thread is done with n. The
-// barrier's completion step, which runs on the last thread to arrive, decides
-// whether n was prime, reports it under that thread's id, and moves the search
-// on to n + 1.
+// division=divisibility: numbers are checked one at a time (2, 3, 4, ... y)
+// for each number n the divisors 2 to sqrt(n) are split between the threads
+// a barrier makes every thread finish n before anyone moves on to n+1
+// the threads are only created once and reused for every number
 
 #include <atomic>
 #include <barrier>
-#include <cstddef>
-#include <cstdint>
 
+#include "config.h"
 #include "prime_output.h"
 #include "primes.h"
 #include "run_threads.h"
 
-namespace divisibility_detail {
+using namespace std;
 
-// Lets the barrier's completion step know which worker it is running on.
-inline thread_local unsigned currentThreadId = 0;
+uint64_t currentNumber = 2;        
+bool searchDone = false;          
+atomic<bool> divisorFound(false); 
 
-// State shared by every worker. `current` is only changed in the barrier's
-// completion step, while all workers are blocked at the barrier, so workers can
-// read it without a lock.
-struct SharedSearch {
-    std::uint64_t limit = 0;
-    unsigned threads = 0;
-    std::uint64_t current = 2;   // 1 is not prime and has no divisors to test
-    std::atomic<bool> divisorFound{false};
-    PrimeOutput* output = nullptr;
-};
+thread_local int myThreadId = 0;  
 
-// Barrier completion step: runs exactly once per number, after every thread has
-// finished its share of the divisors for `current`.
-struct FinishNumber {
-    SharedSearch* search;
-
-    void operator()() noexcept {
-        if (!search->divisorFound.load(std::memory_order_relaxed)) {
-            search->output->report(currentThreadId, search->current);
-        }
-        search->divisorFound.store(false, std::memory_order_relaxed);
-        ++search->current;
+void finishNumber() noexcept {
+    if (!divisorFound) {
+        reportPrime(myThreadId, currentNumber);
     }
-};
+    divisorFound = false;
 
-using NumberBarrier = std::barrier<FinishNumber>;
-
-inline void testDivisors(unsigned threadId, SharedSearch& search, NumberBarrier& barrier) {
-    currentThreadId = threadId;
-    while (search.current <= search.limit) {
-        const std::uint64_t n = search.current;
-        const Range divisors = splitRange(2, isqrt(n), search.threads, threadId - 1);
-        for (std::uint64_t d = divisors.first; d <= divisors.last; ++d) {
-            // Stop early once any thread has proven n composite.
-            if (search.divisorFound.load(std::memory_order_relaxed)) break;
-            if (n % d == 0) {
-                search.divisorFound.store(true, std::memory_order_relaxed);
-                break;
-            }
-        }
-        barrier.arrive_and_wait();
+    // stop before ++ because if y is the biggest uint64, currentNumber++ would wrap to 0
+    if (currentNumber == limit) {
+        searchDone = true;
+    } else {
+        currentNumber++;
     }
 }
 
-}  // namespace divisibility_detail
+typedef barrier<void (*)() noexcept> NumberBarrier;
+NumberBarrier* numberBarrier = nullptr;
 
-inline void runDivisibilityTesting(std::uint64_t limit, unsigned threads, PrimeOutput& output) {
-    using namespace divisibility_detail;
+void testDivisors(int threadId) {
+    myThreadId = threadId;
+    while (!searchDone) {
+        uint64_t n = currentNumber;
+        Range divisors = splitRange(2, intSqrt(n), numThreads, threadId - 1);
 
-    SharedSearch search;
-    search.limit = limit;
-    search.threads = threads;
-    search.output = &output;
-    NumberBarrier barrier(static_cast<std::ptrdiff_t>(threads), FinishNumber{&search});
-    runThreads(threads, [&search, &barrier](unsigned threadId) { testDivisors(threadId, search, barrier); });
+        for (uint64_t d = divisors.first; d <= divisors.last; d++) {
+            if (divisorFound.load(memory_order_relaxed)) break;  // another thread found so stop early
+            if (n % d == 0) {
+                divisorFound.store(true, memory_order_relaxed);
+                break;
+            }
+        }
+        numberBarrier->arrive_and_wait();
+    }
+}
+
+void runDivisibilityTesting() {
+    searchDone = (currentNumber > limit);  
+    NumberBarrier barrierForNumbers(numThreads, finishNumber);
+    numberBarrier = &barrierForNumbers;
+    runThreads(numThreads, testDivisors);
 }

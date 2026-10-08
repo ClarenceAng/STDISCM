@@ -1,165 +1,164 @@
 #pragma once
 
-#include <cctype>
-#include <charconv>
+#include <climits>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
-#include <limits>
+#include <iostream>
+#include <map>
 #include <stdexcept>
 #include <string>
 
-// Sanity cap on y, so a typo in the config can't start a search that would run
-// for days or, with print = end, run out of memory recording the primes. x has
-// no cap: the program creates as many threads as the operating system allows.
-constexpr std::uint64_t kMaxLimit = 1'000'000'000;
+using namespace std;
 
-// When primes are printed.
-enum class PrintMode {
-    Immediate,   // "immediate": by the thread that found it, the moment it is found
-    AtEnd,       // "end": by the main thread, after every worker has been joined
-};
+int numThreads = 0;
+int maxThreads = 0;
+uint64_t limit = 0;
+bool printImmediately = true;
+bool straightDivision = true;
 
-// How the search is split across the threads.
-enum class Division {
-    Straight,       // "straight": [1, y] is cut into one contiguous block per thread
-    Divisibility,   // "divisibility": numbers are tested one at a time, each number's divisors are split across the threads
-};
-
-struct Config {
-    unsigned threads = 0;       // x: number of worker threads to create
-    std::uint64_t limit = 0;    // y: search for primes in [1, limit]
-    PrintMode print = PrintMode::Immediate;
-    Division division = Division::Straight;
-};
-
-namespace config_detail {
-
-inline std::string trim(const std::string& text) {
-    const auto first = text.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos) return "";
-    const auto last = text.find_last_not_of(" \t\r\n");
-    return text.substr(first, last - first + 1);
+void configError(string message) {
+    cerr << "Config error: " << message << endl;
+    exit(1);
 }
 
-inline std::string lowercase(std::string text) {
-    for (char& c : text) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return text;
+void lineError(string fileName, int lineNumber, string message) {
+    configError(fileName + ", line " + to_string(lineNumber) + ": " + message);
 }
 
-inline std::runtime_error lineError(const std::string& path, int lineNumber, const std::string& message) {
-    return std::runtime_error(path + ", line " + std::to_string(lineNumber) + ": " + message);
+bool isSpace(char c) {
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
 }
 
-// Parses digits only: no sign, spaces, separators or decimals.
-inline std::uint64_t parseWholeNumber(const std::string& key, const std::string& value, std::uint64_t min,
-                                      std::uint64_t max, const std::string& path, int lineNumber) {
-    std::uint64_t result = 0;
-    const char* end = value.data() + value.size();
-    const auto [stop, error] = std::from_chars(value.data(), end, result);
-    if (error == std::errc::result_out_of_range || (error == std::errc() && stop == end && result > max)) {
-        throw lineError(path, lineNumber, key + " = " + value + " is too large (the maximum is " + std::to_string(max) + ")");
+string trim(string s) {
+    int start = 0;
+    int end = (int)s.size() - 1;
+    while (start <= end && isSpace(s[start])) start++;
+    while (end >= start && isSpace(s[end])) end--;
+    return s.substr(start, end - start + 1);
+}
+
+string toLower(string s) {
+    for (int i = 0; i < (int)s.size(); i++) {
+        if (s[i] >= 'A' && s[i] <= 'Z') s[i] = (char)(s[i] + 32);
     }
-    if (error != std::errc() || stop != end) {
-        throw lineError(path, lineNumber, key + " must be a whole number written with digits only, not '" + value + "'");
-    }
-    if (result < min) {
-        throw lineError(path, lineNumber, key + " must be at least " + std::to_string(min) + ", not " + value);
-    }
-    return result;
+    return s;
 }
 
-}  // namespace config_detail
+// takes the UTF-8 byte order mark (first line only), the '#' comment and the spaces around a line off
+string cleanLine(string line, string fileName, int lineNumber) {
+    if (lineNumber == 1 && line.substr(0, 3) == "\xEF\xBB\xBF") {
+        line = line.substr(3);
+    }
+    if (line.find('\0') != string::npos) {
+        configError(fileName + " looks like a UTF-16 file (Windows PowerShell's '>' writes those). "
+                               "Save it as UTF-8 or ANSI instead.");
+    }
+    return trim(line.substr(0, line.find('#')));
+}
 
-// Reads a config file made of "key = value" lines. Blank lines are ignored and
-// '#' starts a comment. Each of x, y, print and division must appear exactly
-// once. Throws std::runtime_error describing the first problem found.
-inline Config loadConfig(const std::string& path) {
-    using namespace config_detail;
+// reads a whole number like "1000" and checks that it's between minValue and maxValue
+uint64_t readNumber(string key, string value, uint64_t minValue, uint64_t maxValue, string fileName, int lineNumber) {
+    // digits only (no -, +, commas, decimals...)
+    for (int i = 0; i < (int)value.size(); i++) {
+        if (value[i] < '0' || value[i] > '9') {
+            lineError(fileName, lineNumber, key + " must be a whole number written with digits only, not '" + value + "'");
+        }
+    }
 
-    std::ifstream file(path);
+    uint64_t number = 0;
+    bool tooBig = false;
+    try {
+        number = stoull(value);
+    } catch (out_of_range&) {
+        tooBig = true;  
+    }
+
+    if (tooBig || number > maxValue) {
+        lineError(fileName, lineNumber, key + " = " + value + " is too large (the maximum is " + to_string(maxValue) + ")");
+    }
+    if (number < minValue) {
+        lineError(fileName, lineNumber, key + " must be at least " + to_string(minValue) + ", not " + value);
+    }
+    return number;
+}
+
+// reads a value that must be one of two words (upper or lower case); true means trueWord, false means falseWord
+bool readChoice(string key, string value, string trueWord, string falseWord, string fileName, int lineNumber) {
+    string word = toLower(value);
+    if (word != trueWord && word != falseWord) {
+        lineError(fileName, lineNumber, key + " must be '" + trueWord + "' or '" + falseWord + "', not '" + value + "'");
+    }
+    return word == trueWord;
+}
+
+void loadConfig(string fileName) {
+    ifstream file(fileName);
     if (!file) {
-        throw std::runtime_error("cannot open config file '" + path +
-                                 "'. Run the program from the folder that contains it, or pass its path as the first argument.");
+        configError("cannot open config file " + fileName);
     }
 
-    Config config;
-    // Line each setting was read from, or 0 if it hasn't been seen yet.
-    int threadsLine = 0;
-    int limitLine = 0;
-    int printLine = 0;
-    int divisionLine = 0;
+    // line each setting was found on (0 = not found yet)
+    map<string, int> lineOf = {{"x", 0}, {"max_threads", 0}, {"y", 0}, {"print", 0}, {"division", 0}};
 
-    std::string line;
-    for (int lineNumber = 1; std::getline(file, line); ++lineNumber) {
-        if (lineNumber == 1 && line.rfind("\xEF\xBB\xBF", 0) == 0) {
-            line.erase(0, 3);   // UTF-8 byte order mark, e.g. Notepad's "UTF-8 with BOM"
+    string line;
+    int lineNumber = 0;
+    while (getline(file, line)) {
+        lineNumber++;
+        line = cleanLine(line, fileName, lineNumber);
+        if (line == "") continue;
+
+        size_t equals = line.find('=');
+        if (equals == string::npos) {
+            lineError(fileName, lineNumber, "expected 'key = value', got '" + line + "'");
         }
-        if (line.find('\0') != std::string::npos) {
-            throw std::runtime_error(path + " looks like a UTF-16 file (Windows PowerShell's '>' writes those). "
-                                            "Save it as UTF-8 or ANSI instead.");
+        string key = trim(line.substr(0, equals));
+        string value = trim(line.substr(equals + 1));
+
+        if (key == "") {
+            lineError(fileName, lineNumber, "missing the setting name before '='");
+        }
+        if (lineOf.count(key) == 0) {
+            lineError(fileName, lineNumber, "unknown setting '" + key + "' (expected x, max_threads, y, print or division)");
+        }
+        if (lineOf[key] != 0) {
+            lineError(fileName, lineNumber, key + " is already set on line " + to_string(lineOf[key]));
         }
 
-        line = trim(line.substr(0, line.find('#')));
-        if (line.empty()) continue;
-
-        const auto equals = line.find('=');
-        if (equals == std::string::npos) throw lineError(path, lineNumber, "expected 'key = value', got '" + line + "'");
-
-        const std::string key = trim(line.substr(0, equals));
-        const std::string value = trim(line.substr(equals + 1));
-        if (key.empty()) throw lineError(path, lineNumber, "missing the setting name before '='");
-
-        int* seenOn = nullptr;
-        if (key == "x") seenOn = &threadsLine;
-        else if (key == "y") seenOn = &limitLine;
-        else if (key == "print") seenOn = &printLine;
-        else if (key == "division") seenOn = &divisionLine;
-        else throw lineError(path, lineNumber, "unknown setting '" + key + "' (expected x, y, print or division)");
-
-        if (*seenOn != 0) {
-            throw lineError(path, lineNumber, key + " is already set on line " + std::to_string(*seenOn));
+        if (value == "") {
+            lineError(fileName, lineNumber, key + " has no value");
         }
-        *seenOn = lineNumber;
-        if (value.empty()) throw lineError(path, lineNumber, key + " has no value");
 
+        lineOf[key] = lineNumber;
         if (key == "x") {
-            config.threads = static_cast<unsigned>(
-                parseWholeNumber(key, value, 1, std::numeric_limits<unsigned>::max(), path, lineNumber));
+            numThreads = (int)readNumber(key, value, 1, INT_MAX, fileName, lineNumber);
+        } else if (key == "max_threads") {
+            maxThreads = (int)readNumber(key, value, 1, INT_MAX, fileName, lineNumber);
         } else if (key == "y") {
-            config.limit = parseWholeNumber(key, value, 1, kMaxLimit, path, lineNumber);
+            limit = readNumber(key, value, 1, UINT64_MAX, fileName, lineNumber);
         } else if (key == "print") {
-            const std::string mode = lowercase(value);
-            if (mode == "immediate") {
-                config.print = PrintMode::Immediate;
-            } else if (mode == "end") {
-                config.print = PrintMode::AtEnd;
-            } else {
-                throw lineError(path, lineNumber, "print must be 'immediate' or 'end', not '" + value + "'");
-            }
-        } else {
-            const std::string mode = lowercase(value);
-            if (mode == "straight") {
-                config.division = Division::Straight;
-            } else if (mode == "divisibility") {
-                config.division = Division::Divisibility;
-            } else {
-                throw lineError(path, lineNumber, "division must be 'straight' or 'divisibility', not '" + value + "'");
-            }
+            printImmediately = readChoice(key, value, "immediate", "end", fileName, lineNumber);
+        } else if (key == "division") {
+            straightDivision = readChoice(key, value, "straight", "divisibility", fileName, lineNumber);
         }
     }
-    if (file.bad()) throw std::runtime_error("error while reading config file '" + path + "'");
 
-    std::string missing;
-    const auto requireSet = [&missing](int seenOn, const char* description) {
-        if (seenOn != 0) return;
-        if (!missing.empty()) missing += ", ";
-        missing += description;
-    };
-    requireSet(threadsLine, "x (number of threads)");
-    requireSet(limitLine, "y (search limit)");
-    requireSet(printLine, "print (immediate or end)");
-    requireSet(divisionLine, "division (straight or divisibility)");
-    if (!missing.empty()) throw std::runtime_error(path + ": missing " + missing);
+    if (file.bad()) {
+        configError("error while reading config file '" + fileName + "'");
+    }
 
-    return config;
+    string missing = "";
+    if (lineOf["x"] == 0) missing += ", x (number of threads)";
+    if (lineOf["max_threads"] == 0) missing += ", max_threads (largest x allowed)";
+    if (lineOf["y"] == 0) missing += ", y (search limit)";
+    if (lineOf["print"] == 0) missing += ", print (immediate or end)";
+    if (lineOf["division"] == 0) missing += ", division (straight or divisibility)";
+    if (missing != "") {
+        configError(fileName + ": missing " + missing.substr(2));  // substr(2) removes the first ", "
+    }
+
+    if (numThreads > maxThreads) {
+        lineError(fileName, lineOf["x"], "x = " + to_string(numThreads) + " is more than max_threads = " +
+                                             to_string(maxThreads) + " (line " + to_string(lineOf["max_threads"]) + ")");
+    }
 }

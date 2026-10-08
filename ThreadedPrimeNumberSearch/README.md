@@ -1,6 +1,6 @@
 # Threaded Prime Number Search
 
-Finds every prime from 1 to **y** using **x** threads (`std::thread`). `config.txt` sets x and y, and chooses one of two printing modes and one of two ways to divide the work, for four combinations in total:
+Finds every prime from 1 to **y** using **x** threads (`std::thread`). `config.txt` sets x, the largest x allowed (`max_threads`) and y, and chooses one of two printing modes and one of two ways to divide the work, for four combinations in total:
 
 | `print` | `division` | When primes are printed | How the work is divided |
 |---|---|---|---|
@@ -15,16 +15,18 @@ Files:
 - `straight_division.h`: the straight-division search.
 - `divisibility_testing.h`: the divisibility-testing search.
 - `prime_output.h`: prints each prime immediately, or records it for printing after the join, depending on `print`.
-- `run_threads.h`: creates the x threads, starts them together and joins them, and reports cleanly if the system can't create them all.
+- `run_threads.h`: creates the x threads, starts them together and joins them, and reports an error if the system can't create them all.
 - `config.h`, `primes.h`, `timing.h`: reading the config file, primality test and range splitting, timestamps.
 - `config.txt`: the settings.
 
 ## Configuration
 
 ```ini
-# threads (at least 1, no upper limit)
+# threads (at least 1, at most max_threads)
 x=4
-# range: search for primes from 1 up to and including y (1 - 1000000000)
+# largest x allowed
+max_threads=1024
+# range: search for primes from 1 up to and including y (1 - 18446744073709551615)
 y=1000
 # when primes are printed: immediate (as each thread finds them) or end (after all threads finish)
 print=immediate
@@ -36,10 +38,10 @@ The program reads `config.txt` from the current folder. To use a different file,
 
 The file is checked before any thread starts:
 
-- Each of the four settings must appear exactly once, in any order. Setting names are lowercase. The `print` and `division` values are not case-sensitive.
-- `x` and `y` are written with digits only: no signs, commas, decimals or exponents.
-- `x` must be at least 1 and has no upper limit. The program tries to create as many threads as you ask for (see [Large thread counts](#large-thread-counts)).
-- `y` must be from 1 to 1,000,000,000. The cap stops a typo from starting a run that would take days or, with `print=end`, run out of memory.
+- Each of the five settings must appear exactly once, in any order. Setting names are lowercase. The `print` and `division` values are not case-sensitive.
+- `x`, `max_threads` and `y` are written with digits only: no signs, commas, decimals or exponents.
+- `x` must be from 1 to `max_threads`. Raise `max_threads` to allow more threads; `max_threads` itself must be at least 1. The program creates as many threads as `x` asks for, so a high `max_threads` can reach what the operating system allows (see [Large thread counts](#large-thread-counts)).
+- `y` must be from 1 to 18,446,744,073,709,551,615, the largest 64-bit unsigned number. Nothing stops a huge `y`, so be careful: run time grows quickly (about 2.5 s for y = 10,000,000 on one thread, and much longer beyond that). With `print=end`, every prime is kept in memory until the end, about 24 bytes each.
 - The file must be saved as UTF-8 (with or without a byte order mark) or ANSI. UTF-16 files, which Windows PowerShell's `>` creates, are rejected with a message saying so.
 
 If anything is wrong, the program names the file, the line and the problem, then exits with code 1. For example:
@@ -102,13 +104,15 @@ With large limits, writing to the console takes more time than the search itself
 
 ### Large thread counts
 
-All x threads are created first and held at a start gate. Once every one of them exists, they are released together. If the operating system can't create all x, the threads that were created exit without searching, and the program exits with code 1 and a message like:
+`max_threads` limits how large `x` can be, but setting it high doesn't guarantee the system can create that many threads. All x threads are created first and held at a start gate. Once every one of them exists, they are released together. If the operating system can't create all x, the threads that were created exit without searching, and the program exits with code 1 and a message like:
 
 ```
 Error: the system could only create 14177 of the 200000 threads asked for (Resource temporarily unavailable)
 ```
 
 How many threads the system can create depends on its free memory. If x is too large even to set up the per-thread bookkeeping, the program reports that it ran out of memory instead.
+
+The clean exit isn't guaranteed when memory runs out completely. Once Windows has no memory left to commit, a new thread can crash inside Windows before any of the program's code runs. Windows Error Reporting then freezes the program, and it never prints the message. In testing with a hard 512 MB cap, that happened in about half of the runs. Keep `max_threads` well below what your machine can handle; the default of 1024 is far below it.
 
 With more than 64 threads, the per-thread lists show only the first 10 and last 10 threads. The summary always names the slowest thread with `division=straight`.
 

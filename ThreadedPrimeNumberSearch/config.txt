@@ -1,8 +1,7 @@
-# threads (at least 1, no upper limit)
 x=4
-# range: search for primes from 1 up to and including y (1 - 1000000000)
-y=1000
-# when primes are printed: immediate (as each thread finds them) or end (after all threads finish)
-print=immediate
-# how the work is split: straight (range 1 - y cut into x blocks) or divisibility (each number's divisors split across threads)
+y=100000
+# immediate/end
+print=end
+# straight/divisibility
 division=straight
+max_threads=1024
