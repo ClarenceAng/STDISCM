@@ -2,4 +2,4 @@
 
 Run .\build.bat which genrates prime_search.exe
 
-Run the prime_search.exe with your chose config.txt parameters.
+Run the prime_search.exe with your chosen config.txt parameters.
