@@ -106,7 +106,7 @@ void runSearch() {
         }
         cout << "Slowest:  Thread " << slowest + 1 << ", finished after " << msString(finishTimes[slowest]) << "\n";
     } else {
-        cout << "Numbers tested: " << limit - 1 << " (each one is a barrier round every thread waits on)\n";
+        cout << "Numbers tested: " << limit - 1 << "\n";
     }
 }
 
