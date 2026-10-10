@@ -1,0 +1,9 @@
+# max concurrent instances
+n=3
+# tanks, healers and DPS in the queue
+t=5
+h=5
+d=15
+# clear time range in seconds (t1 <= t2 <= 15)
+t1=1
+t2=5
