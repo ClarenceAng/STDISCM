@@ -8,6 +8,7 @@
 #include <random>
 #include <semaphore>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -44,14 +45,14 @@ void printEvent(string message) {
     printStatus();
 }
 
-// the message inside a saved exception
+// the message inside a saved exception (only system_error and bad_alloc are ever saved)
 string errorMessage(exception_ptr error) {
     try {
         rethrow_exception(error);
-    } catch (exception& e) {
+    } catch (system_error& e) {
         return e.what();
-    } catch (...) {
-        return "unknown error";
+    } catch (bad_alloc&) {
+        return "out of memory";
     }
 }
 
@@ -66,6 +67,15 @@ int pickInstance() {
     return best;
 }
 
+// a dungeon run failed: free its instance and save the error for main (only call this from a catch block)
+// an exception leaving the thread would end the whole program, which is why it's saved instead
+void runFailed(int instance, int party) {
+    lock_guard<mutex> lock(mtx);
+    status[instance] = "empty";
+    if (!runError) runError = current_exception();
+    printEvent("Party " + to_string(party) + " failed in Instance " + to_string(instance + 1));
+}
+
 // lock_guard unlocks mtx even if something throws, mtx.lock()/unlock() would leave it locked forever
 void runDungeon(int instance, int party, int clearTime) {
     try {
@@ -76,19 +86,25 @@ void runDungeon(int instance, int party, int clearTime) {
         partiesServed[instance]++;
         timeServed[instance] += clearTime;
         printEvent("Party " + to_string(party) + " cleared Instance " + to_string(instance + 1));
-    } catch (...) {
-        // an exception leaving this thread would end the whole program, so save it for main to report
-        lock_guard<mutex> lock(mtx);
-        status[instance] = "empty";
-        if (!runError) runError = current_exception();
-        try {
-            printEvent("Party " + to_string(party) + " failed in Instance " + to_string(instance + 1));
-        } catch (...) {
-            // the error is already saved for main, only this one line of output is lost
-        }
+    } catch (system_error&) {
+        // locking mtx failed
+        runFailed(instance, party);
+    } catch (bad_alloc&) {
+        // out of memory while building the message
+        runFailed(instance, party);
     }
 
     // give the instance back even after an error, otherwise enterDungeon could wait for it forever
+    freeInstances.release();
+}
+
+// the party never started: free the instance it took (if it got that far) and give its slot back
+void undoEnter(int instance, int party) {
+    if (instance != -1) {
+        lock_guard<mutex> lock(mtx);
+        status[instance] = "empty";
+        printEvent("Party " + to_string(party) + " could not start in Instance " + to_string(instance + 1));
+    }
     freeInstances.release();
 }
 
@@ -108,14 +124,13 @@ void enterDungeon(int party, int clearTime) {
 
         if (runs[instance].joinable()) runs[instance].join();
         runs[instance] = thread(runDungeon, instance, party, clearTime);
-    } catch (...) {
-        // the party never started (e.g. the system couldn't make another thread), so free the instance again
-        if (instance != -1) {
-            lock_guard<mutex> lock(mtx);
-            status[instance] = "empty";
-            printEvent("Party " + to_string(party) + " could not start in Instance " + to_string(instance + 1));
-        }
-        freeInstances.release();
+    } catch (system_error&) {
+        // locking mtx, joining the old thread or making the new one failed (e.g. the system is out of threads)
+        undoEnter(instance, party);
+        throw;
+    } catch (bad_alloc&) {
+        // out of memory while building the message or the new thread
+        undoEnter(instance, party);
         throw;
     }
 }
@@ -123,7 +138,8 @@ void enterDungeon(int party, int clearTime) {
 unsigned randomSeed() {
     try {
         return random_device{}();
-    } catch (exception& e) {
+    } catch (runtime_error& e) {
+        // thrown when the system has no source of randomness
         cerr << "Warning: no random device (" << e.what() << "), seeding the clear times from the clock instead\n";
         return (unsigned)chrono::steady_clock::now().time_since_epoch().count();
     }
@@ -183,7 +199,10 @@ int main(int argc, char* argv[]) {
             enterDungeon(p, randomTime(rng));
             partiesStarted++;
         }
-    } catch (...) {
+    } catch (system_error&) {
+        // acquire() failed, or enterDungeon couldn't start the party's thread
+        startError = current_exception();
+    } catch (bad_alloc&) {
         startError = current_exception();
     }
     // every thread has to be joined before main returns, even after an error
