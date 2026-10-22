@@ -2,7 +2,6 @@
 
 #include <climits>
 #include <cstdint>
-#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -20,9 +19,14 @@ long long numDps = 0;
 int minClearTime = 0;
 int maxClearTime = 0;
 
+// thrown for any problem with the config file, main catches it and prints the message
+class ConfigError : public runtime_error {
+public:
+    ConfigError(string message) : runtime_error(message) {}
+};
+
 void configError(string message) {
-    cerr << "Config error: " << message << endl;
-    exit(1);
+    throw ConfigError(message);
 }
 
 void lineError(string fileName, int lineNumber, string message) {

@@ -1,5 +1,5 @@
-x=16
-y=200000
+x=4
+y=10000000
 # immediate/end
 print=immediate
 # straight/divisibility
