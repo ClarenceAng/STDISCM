@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package mediaupload;
+
+// One Upload call carries one video. The producer sends a header and waits for
+// the consumer's decision, and only streams the file's bytes if it is ACCEPTED.
+service MediaUpload {
+  rpc Upload(stream UploadMessage) returns (stream UploadReply);
+}
+
+message UploadHeader {
+  string producer_id = 1;
+  string file_name = 2;
+  uint64 size_bytes = 3;
+  string sha256 = 4;  // lowercase hex digest of the whole file
+}
+
+message UploadMessage {
+  oneof content {
+    UploadHeader header = 1;  // always the first message
+    bytes chunk = 2;          // every message after that
+  }
+}
+
+enum UploadStatus {
+  UPLOAD_STATUS_UNSPECIFIED = 0;
+  ACCEPTED = 1;    // a queue slot is reserved, send the bytes
+  QUEUED = 2;      // all bytes arrived and matched the hash
+  QUEUE_FULL = 3;  // dropped, the leaky bucket is full
+  DUPLICATE = 4;   // dropped, this SHA-256 is already saved or on its way in
+  REJECTED = 5;    // bad header or a transfer that did not match its hash
+}
+
+message UploadReply {
+  UploadStatus status = 1;
+  string detail = 2;
+  uint32 queue_occupied = 3;
+  uint32 queue_capacity = 4;
+}

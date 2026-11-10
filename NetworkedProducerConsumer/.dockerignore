@@ -1,0 +1,5 @@
+storage/
+tools/
+docker-compose.yml
+*.pptx
+*.md

@@ -70,10 +70,17 @@ int pickInstance() {
 // a dungeon run failed: free its instance and save the error for main (only call this from a catch block)
 // an exception leaving the thread would end the whole program, which is why it's saved instead
 void runFailed(int instance, int party) {
-    lock_guard<mutex> lock(mtx);
-    status[instance] = "empty";
-    if (!runError) runError = current_exception();
-    printEvent("Party " + to_string(party) + " failed in Instance " + to_string(instance + 1));
+    // the same problem can hit again while reporting it, and an exception from here would end the program
+    try {
+        lock_guard<mutex> lock(mtx);
+        status[instance] = "empty";
+        if (!runError) runError = current_exception();
+        printEvent("Party " + to_string(party) + " failed in Instance " + to_string(instance + 1));
+    } catch (system_error& e) {
+        cerr << "Error: could not record that a party failed (" << e.what() << ")\n";
+    } catch (bad_alloc&) {
+        cerr << "Error: out of memory while reporting that a party failed\n";
+    }
 }
 
 // lock_guard unlocks mtx even if something throws, mtx.lock()/unlock() would leave it locked forever
@@ -95,7 +102,11 @@ void runDungeon(int instance, int party, int clearTime) {
     }
 
     // give the instance back even after an error, otherwise enterDungeon could wait for it forever
-    freeInstances.release();
+    try {
+        freeInstances.release();
+    } catch (system_error& e) {
+        cerr << "Error: could not give back Instance " << instance + 1 << " (" << e.what() << ")\n";
+    }
 }
 
 // the party never started: free the instance it took (if it got that far) and give its slot back
@@ -117,6 +128,10 @@ void enterDungeon(int party, int clearTime) {
         {
             lock_guard<mutex> lock(mtx);
             instance = pickInstance();
+            if (instance == -1) {
+                // only possible if a failed run couldn't mark its instance empty again
+                throw system_error(make_error_code(errc::resource_unavailable_try_again), "no instance is marked empty");
+            }
             status[instance] = "active";
             printEvent("Party " + to_string(party) + " entered Instance " + to_string(instance + 1) +
                        " (clear time: " + to_string(clearTime) + "s)");
@@ -158,6 +173,9 @@ int main(int argc, char* argv[]) {
     } catch (ConfigError& e) {
         cerr << "Config error: " << e.what() << "\n";
         return 1;
+    } catch (bad_alloc&) {
+        cerr << "Error: not enough memory to read the config file\n";
+        return 1;
     }
 
     long long parties = min({numTanks, numHealers, numDps / 3});
@@ -171,11 +189,14 @@ int main(int argc, char* argv[]) {
         partiesServed.assign(maxInstances, 0);
         timeServed.assign(maxInstances, 0);
         runs.resize(maxInstances);
+        freeInstances.release(maxInstances);
     } catch (bad_alloc&) {
         cerr << "Error: not enough memory for n = " << maxInstances << " instances, use a smaller n\n";
         return 1;
+    } catch (system_error& e) {
+        cerr << "Error: could not make " << maxInstances << " instances available (" << e.what() << ")\n";
+        return 1;
     }
-    freeInstances.release(maxInstances);
 
     cout << "=== LFG Dungeon Queue ===\n";
     cout << "Max concurrent instances (n): " << maxInstances << "\n";

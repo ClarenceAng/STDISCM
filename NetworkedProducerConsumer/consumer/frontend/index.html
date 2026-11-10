@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Media Upload Service</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <h1>Media Upload Service</h1>
+    <p class="offline" id="offline" hidden>Can't reach the consumer. Retrying…</p>
+  </header>
+
+  <section class="stats" aria-label="Service status">
+    <div class="stat stat-queue">
+      <span class="stat-label">Queue</span>
+      <span class="stat-value" id="queueValue">–</span>
+      <div class="meter" aria-hidden="true"><div class="meter-fill" id="queueFill"></div></div>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Consumer threads busy</span>
+      <span class="stat-value" id="workersValue">–</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Saved</span>
+      <span class="stat-value" id="savedValue">–</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Dropped (queue full)</span>
+      <span class="stat-value" id="droppedValue">–</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Duplicates</span>
+      <span class="stat-value" id="duplicatesValue">–</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Failed</span>
+      <span class="stat-value" id="failedValue">–</span>
+    </div>
+  </section>
+
+  <main class="layout">
+    <section aria-label="Uploaded videos">
+      <p class="empty" id="empty">No videos yet. They'll appear here as producers upload them.</p>
+      <div class="grid" id="grid"></div>
+    </section>
+
+    <aside class="activity" aria-label="Recent activity">
+      <h2>Recent activity</h2>
+      <p class="activity-empty" id="activityEmpty">Nothing yet.</p>
+      <ul id="activityList"></ul>
+    </aside>
+  </main>
+
+  <dialog id="playerDialog" aria-label="Video player">
+    <div class="player-head">
+      <h2 id="playerTitle"></h2>
+      <button type="button" id="playerClose">Close</button>
+    </div>
+    <p class="player-message" id="playerMessage" role="alert" hidden></p>
+    <video id="player" controls playsinline></video>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>

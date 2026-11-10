@@ -1,3 +1,4 @@
+#include <exception>
 #include <iomanip>
 #include <iostream>
 #include <new>
@@ -68,6 +69,9 @@ void runSearch() {
     }
     chrono::steady_clock::duration searchTime = chrono::steady_clock::now() - startTime;
 
+    // a thread hit an error, so the results are incomplete and main's handlers should report it
+    if (searchError) rethrow_exception(searchError);
+
     if (!printImmediately) {
         cout << "All threads joined after " << msString(searchTime) << ". Primes (timestamps show when each was found):\n\n";
         printAllPrimes();
@@ -120,13 +124,30 @@ int main(int argc, char* argv[]) {
     string configFile = "config.txt";
     if (argc == 2) configFile = argv[1];
 
-    loadConfig(configFile);
+    try {
+        loadConfig(configFile);
+    } catch (bad_alloc&) {
+        cerr << "Error: not enough memory to read the config file" << endl;
+        return 1;
+    }
 
     try {
         runSearch();
     } catch (bad_alloc&) {
         cout << flush;
         cerr << "\nError: not enough memory to run " << numThreads << " threads up to y = " << limit << endl;
+        return 1;
+    } catch (exception& e) {
+        // for example a lock failing inside a search thread
+        cout << flush;
+        cerr << "\nError: the search could not finish (" << e.what() << ")" << endl;
+        return 1;
+    }
+
+    // cout doesn't throw when a write fails (e.g. redirected to a full disk), so check it here
+    cout.flush();
+    if (!cout) {
+        cerr << "Error: could not write all of the output" << endl;
         return 1;
     }
     return 0;

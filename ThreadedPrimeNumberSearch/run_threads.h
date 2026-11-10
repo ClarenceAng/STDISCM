@@ -7,6 +7,8 @@
 #include <thread>
 #include <vector>
 
+#include "prime_output.h"
+
 using namespace std;
 
 // the threads wait at this gate until all of them have been created
@@ -18,14 +20,19 @@ condition_variable gateChanged;
 void (*threadWork)(int) = nullptr;  // the function every thread runs
 
 void threadMain(int threadId) {
-    unique_lock<mutex> lock(gateMutex);
-    while (gateState == 0) {
-        gateChanged.wait(lock);
-    }
-    bool start = (gateState == 1);
-    lock.unlock();
+    // an exception leaving a thread would end the whole program without any message
+    try {
+        unique_lock<mutex> lock(gateMutex);
+        while (gateState == 0) {
+            gateChanged.wait(lock);
+        }
+        bool start = (gateState == 1);
+        lock.unlock();
 
-    if (start) threadWork(threadId);
+        if (start) threadWork(threadId);
+    } catch (exception&) {
+        saveSearchError();
+    }
 }
 
 // makes `count` threads that each run work(threadId) with ids 1 to count, then joins them

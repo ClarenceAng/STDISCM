@@ -22,8 +22,16 @@ atomic<bool> divisorFound(false);
 thread_local int myThreadId = 0;  
 
 void finishNumber() noexcept {
-    if (!divisorFound) {
-        reportPrime(myThreadId, currentNumber);
+    // this runs inside the barrier: an exception here would end the program, so saving a prime
+    // failing (out of memory) stops the search instead, and every thread leaves after this number
+    try {
+        if (!divisorFound) {
+            reportPrime(myThreadId, currentNumber);
+        }
+    } catch (exception&) {
+        saveSearchError();
+        searchDone = true;
+        return;
     }
     divisorFound = false;
 

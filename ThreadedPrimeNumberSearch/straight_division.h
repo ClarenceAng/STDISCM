@@ -30,6 +30,7 @@ void searchBlock(int threadId) {
     if (block.first <= block.last) {
         uint64_t n = block.first;
         while (true) {
+            if (searchFailed.load(memory_order_relaxed)) return;  // another thread hit an error
             if (isPrime(n)) reportPrime(threadId, n);
             if (n == block.last) break;
             n++;

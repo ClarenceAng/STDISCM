@@ -1,6 +1,8 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
+#include <exception>
 #include <iostream>
 #include <mutex>
 #include <string>
@@ -10,6 +12,15 @@
 #include "timing.h"
 
 using namespace std;
+
+// a search thread can't throw an exception to main, so the first one that goes wrong is saved here
+exception_ptr searchError;
+atomic<bool> searchFailed(false);  // also tells the other threads to stop
+
+// only call this from a catch block
+void saveSearchError() noexcept {
+    if (!searchFailed.exchange(true)) searchError = current_exception();
+}
 
 struct PrimeInfo {
     uint64_t number;
