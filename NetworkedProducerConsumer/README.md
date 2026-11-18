@@ -9,7 +9,7 @@ The program is written in C++17. The only other code is the browser page (`consu
 ## Files
 
 ```
-config.txt                  p, c, q and the optional settings
+config.txt                  p, c and q
 run.bat, run.sh             build and start the command line program
 tools/upload_cli.cpp        the command line program and the scheduler: starts the containers, then moves new videos into the producers' folders
 proto/media_upload.proto    the gRPC contract between producer and consumer
@@ -78,7 +78,7 @@ tools\upload_cli.exe config.txt docker-compose.yml
 
 ## The scheduler
 
-Every `scan_seconds`, the scheduler looks through `videos/` and the folders inside it. The producers' folders are skipped.
+Every 2 seconds, the scheduler looks through `videos/` and the folders inside it. The producers' folders are skipped.
 
 - A video is only taken once its size and modification time haven't changed since the previous look, so a file that is still being copied in is left alone.
 - It is moved, not copied, into the folder of the running producer with the fewest videos waiting, and the window shows the move. A video counts as waiting from the moment it is moved until its producer has a result for it, so the one being sent counts too. A tie goes to the lowest producer number.
@@ -98,17 +98,22 @@ If the program ends without clearing up, for example because its window is close
 
 ## Settings
 
-Restart the script after changing `config.txt`. `docker-compose.yml` is written from it each time the service starts.
+`config.txt` sets these three, and all three are required. Restart the script after changing it. `docker-compose.yml` is written from it each time the service starts.
 
-| Setting | Meaning | Allowed | Default |
-| --- | --- | --- | --- |
-| `p` | producers, each with its own folder | 1 to 64 | required |
-| `c` | consumer threads | 1 to 64 | required |
-| `q` | max queue length | 1 to 100000 | required |
-| `http_port` | port for the GUI | 1 to 65535 | 8080 |
-| `compress_height` | videos taller than this are scaled down | 144 to 2160 | 480 |
-| `scan_seconds` | time between looks at the main folder and at each producer's folder | 1 to 3600 | 2 |
-| `max_upload_mb` | largest video accepted | 1 to 102400 | 2048 |
+| Setting | Meaning | Allowed |
+| --- | --- | --- |
+| `p` | producers, each with its own folder | 1 to 64 |
+| `c` | consumer threads | 1 to 64 |
+| `q` | max queue length | 1 to 100000 |
+
+Everything else is fixed:
+
+| | Value |
+| --- | --- |
+| GUI port | 8080 |
+| Videos taller than this are scaled down | 480 pixels |
+| Time between looks at the main folder and at each producer's folder | 2 seconds |
+| Largest video accepted | 2048 MB |
 
 ## How a video moves through the system
 
@@ -166,7 +171,7 @@ Every failure is reported with its reason in the window, in the GUI's recent act
 
 - **Queue full notice:** the consumer tells the producer before any of the video is sent, and the producer logs it as `DROPPED`.
 - **Duplicate detection:** by SHA-256. It also catches the same video arriving from two producers at once, and it still works after a restart because saved videos are listed in `storage/manifest.jsonl`.
-- **Video compression:** OpenCV re-encodes to H.264 and scales down to `compress_height`. If that doesn't make the file smaller and the original can be played by browsers as it is, the original video stream is kept.
+- **Video compression:** OpenCV re-encodes to H.264 and scales down to 480 pixels high. If that doesn't make the file smaller and the original can be played by browsers as it is, the original video stream is kept.
 
 ## Where the results go
 

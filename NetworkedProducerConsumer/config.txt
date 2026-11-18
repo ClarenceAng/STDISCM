@@ -4,13 +4,3 @@ p=5
 c=10
 # max queue length, uploads beyond this are dropped
 q=5
-
-# optional, these are the defaults
-# port for the browser GUI
-http_port=8080
-# videos taller than this are scaled down when compressed
-compress_height=480
-# seconds between looks at the folders, to be sure files have finished copying
-scan_seconds=2
-# largest single video the consumer accepts, in MB
-max_upload_mb=2048

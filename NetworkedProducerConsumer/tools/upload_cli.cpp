@@ -44,6 +44,8 @@ using namespace std;
 namespace fs = std::filesystem;
 
 const uint64_t grpcPort = 50051;
+const uint64_t httpPort = 8080;           // the browser GUI
+const uint64_t scanSeconds = 2;           // between looks at the folders, here and in each producer
 const string containerFolder = "/input";  // where a producer's folder appears inside its container
 const int consumerStartSeconds = 60;       // how long the consumer may take to start listening
 const string consumerReadyText = "[consumer] ready:";
@@ -58,19 +60,17 @@ struct Setting {
     string description;
     uint64_t minValue;
     uint64_t maxValue;
-    bool required;
-    uint64_t value;  // the default, for optional settings
-    int line;        // line it was found on (0 = not found yet)
+    uint64_t value;
+    int line;  // line it was found on (0 = not found yet)
 };
 
+// The only settings, and all of them are required. Everything else is fixed:
+// the GUI port and scan time above, and the consumer's own defaults for the
+// compressed height (480) and the largest upload (2048 MB).
 vector<Setting> settings = {
-    {"p", "producers, each with its own folder", 1, 64, true, 0, 0},
-    {"c", "consumer threads", 1, 64, true, 0, 0},
-    {"q", "max queue length", 1, 100000, true, 0, 0},
-    {"http_port", "browser GUI port", 1, 65535, false, 8080, 0},
-    {"compress_height", "compressed video height", 144, 2160, false, 480, 0},
-    {"scan_seconds", "seconds between folder scans", 1, 3600, false, 2, 0},
-    {"max_upload_mb", "largest upload in MB", 1, 102400, false, 2048, 0},
+    {"p", "producers, each with its own folder", 1, 64, 0, 0},
+    {"c", "consumer threads", 1, 64, 0, 0},
+    {"q", "max queue length", 1, 100000, 0, 0},
 };
 
 Setting* findSetting(const string& key) {
@@ -161,7 +161,7 @@ void loadConfig(const string& fileName) {
 
         Setting* setting = findSetting(key);
         if (setting == nullptr) {
-            lineError(fileName, lineNumber, "unknown setting '" + key + "'");
+            lineError(fileName, lineNumber, "unknown setting '" + key + "', only p, c and q can be set");
         }
         if (setting->line != 0) {
             lineError(fileName, lineNumber, key + " is already set on line " + to_string(setting->line));
@@ -180,7 +180,7 @@ void loadConfig(const string& fileName) {
 
     string missing;
     for (const Setting& setting : settings) {
-        if (setting.required && setting.line == 0) {
+        if (setting.line == 0) {
             missing += ", " + setting.key + " (" + setting.description + ")";
         }
     }
@@ -500,11 +500,9 @@ string composeText() {
          << "      CONSUMER_THREADS: \"" << valueOf("c") << "\"\n"
          << "      QUEUE_CAPACITY: \"" << valueOf("q") << "\"\n"
          << "      GRPC_PORT: \"" << grpcPort << "\"\n"
-         << "      HTTP_PORT: \"" << valueOf("http_port") << "\"\n"
-         << "      COMPRESS_HEIGHT: \"" << valueOf("compress_height") << "\"\n"
-         << "      MAX_UPLOAD_MB: \"" << valueOf("max_upload_mb") << "\"\n"
+         << "      HTTP_PORT: \"" << httpPort << "\"\n"
          << "    ports:\n"
-         << "      - \"" << valueOf("http_port") << ":" << valueOf("http_port") << "\"\n"
+         << "      - \"" << httpPort << ":" << httpPort << "\"\n"
          << "    volumes:\n"
          << "      - ./storage:/data\n";
 
@@ -518,7 +516,7 @@ string composeText() {
              << "      PRODUCER_ID: \"" << name << "\"\n"
              << "      CONSUMER_ADDRESS: \"consumer:" << grpcPort << "\"\n"
              << "      VIDEO_DIR: \"" << containerFolder << "\"\n"
-             << "      SCAN_SECONDS: \"" << valueOf("scan_seconds") << "\"\n"
+             << "      SCAN_SECONDS: \"" << scanSeconds << "\"\n"
              << "    volumes:\n"
              << "      - type: bind\n"
              << "        source: " << composeString(producers[number - 1].folder.u8string()) << "\n"
@@ -1033,7 +1031,7 @@ void runScheduler() {
         SchedulerMemory memory;
         while (!stopping) {
             scheduleOnce(memory);
-            sleepUnlessStopped(valueOf("scan_seconds"));
+            sleepUnlessStopped(scanSeconds);
         }
     } catch (const exception& error) {
         printLine(string("The scheduler has stopped, so new videos in the main folder won't be handed out. Press Ctrl+C and start again: ") +
@@ -1229,7 +1227,7 @@ int main(int argc, char* argv[]) {
         }
 
         printLine("");
-        printLine("The service is running. GUI: http://localhost:" + to_string(valueOf("http_port")));
+        printLine("The service is running. GUI: http://localhost:" + to_string(httpPort));
         printLine("Put videos, or folders of videos, in " + mainFolder.u8string());
         printLine("The scheduler moves each one into the folder of the producer with the fewest videos waiting, producer-1 to producer-" +
                   to_string(valueOf("p")) + ".");
