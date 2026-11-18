@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package enrollsys;
+
+import "common.proto";
+
+// Runs on the admin node (bonus: more features on their own node). Admins only.
+// It reads terms and sections itself instead of asking the course node, so it
+// keeps working when the course node is down.
+service AdminService {
+  rpc ListTerms(ListTermsRequest) returns (ListTermsReply);
+  rpc ListFaculty(ListFacultyRequest) returns (ListFacultyReply);
+  rpc ListOfferings(AdminListOfferingsRequest) returns (AdminListOfferingsReply);
+  rpc CreateOffering(CreateOfferingRequest) returns (Offering);
+  // Takes a row lock on the section, so a capacity change can't race an enrollment.
+  rpc UpdateOffering(UpdateOfferingRequest) returns (Offering);
+}
+
+message ListFacultyRequest {}
+
+message ListFacultyReply {
+  repeated User faculty = 1;
+}
+
+message AdminListOfferingsRequest {
+  string term_code = 1;       // empty: the term whose enrollment is open
+}
+
+message AdminListOfferingsReply {
+  Term term = 1;
+  repeated Offering offerings = 2;
+}
+
+// title and units are only needed when course_code is a new course.
+message CreateOfferingRequest {
+  string course_code = 1;
+  string title = 2;
+  int32 units = 3;
+  string term_code = 4;
+  string section = 5;
+  string schedule = 6;
+  string room = 7;
+  int64 faculty_id = 8;       // 0 for none
+  int32 capacity = 9;
+  bool open = 10;
+}
+
+message UpdateOfferingRequest {
+  int64 offering_id = 1;
+  int32 capacity = 2;
+  bool open = 3;
+  int64 faculty_id = 4;       // 0 for none
+}

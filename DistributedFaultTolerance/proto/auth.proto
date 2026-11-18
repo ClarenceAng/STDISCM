@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package enrollsys;
+
+import "common.proto";
+
+// Runs on the auth node, the only node that holds the private key that signs session tokens.
+// Every other node checks tokens with the public key, so they keep working while this node is down.
+service AuthService {
+  rpc Login(LoginRequest) returns (LoginReply);
+  // Revokes the session whose token is in the "authorization" metadata. All nodes see the
+  // revocation, because they look the session up in the shared database.
+  rpc Logout(LogoutRequest) returns (LogoutReply);
+}
+
+message LoginRequest {
+  string username = 1;
+  string password = 2;
+}
+
+message LoginReply {
+  string token = 1;           // RS256 JWT
+  int64 expires_at = 2;       // Unix seconds
+  User user = 3;
+  string session_id = 4;
+}
+
+message LogoutRequest {}
+
+message LogoutReply {
+  bool already_signed_out = 1;
+}

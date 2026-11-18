@@ -1,5 +1,9 @@
-// One producer instance: uploads the videos at its path to the consumer over
-// gRPC, one at a time, and finishes when each of them has a result.
+// One producer instance: watches its own folder for as long as the service runs
+// and uploads each video that appears there to the consumer over gRPC, one at a
+// time. The scheduler in tools/upload_cli is what puts the videos there.
+//
+// Videos are left in the folder after their result. Each result is also printed
+// as a "result:" line, which is how the scheduler knows how many are still waiting.
 
 #include <algorithm>
 #include <atomic>
@@ -11,6 +15,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <new>
@@ -33,8 +38,8 @@ using namespace mediaupload;
 namespace fs = std::filesystem;
 
 const size_t chunkSize = 1024 * 1024;
-const int maxAttempts = 5;           // tries per video, and in a row for the folder, before giving up on it
-const int consumerWaitSeconds = 120;  // how long the consumer may be unreachable before this producer gives up
+const int maxAttempts = 5;               // tries per video, and in a row for the folder, before giving up on it
+const int consumerReminderSeconds = 60;  // how often a long wait for the consumer is mentioned again
 const int keepalivePingMs = 20000;
 const int keepaliveTimeoutMs = 10000;
 
@@ -93,8 +98,42 @@ struct Totals {
     int rejected = 0;
     int failed = 0;
 
-    int all() const { return uploaded + dropped + duplicates + rejected + failed; }
+    string text() const {
+        return "totals: " + to_string(uploaded) + " uploaded, " + to_string(dropped) + " dropped, " + to_string(duplicates) +
+               " duplicate, " + to_string(rejected) + " rejected, " + to_string(failed) + " failed";
+    }
 };
+
+// The scheduler in tools/upload_cli reads these lines to know how many videos are
+// still waiting in this folder, so their form must stay "result: <OUTCOME> <file name>".
+void reportResult(Totals& totals, Outcome outcome, const string& name) {
+    string word;
+    switch (outcome) {
+        case Outcome::Uploaded:
+            totals.uploaded++;
+            word = "UPLOADED";
+            break;
+        case Outcome::Dropped:
+            totals.dropped++;
+            word = "DROPPED";
+            break;
+        case Outcome::Duplicate:
+            totals.duplicates++;
+            word = "DUPLICATE";
+            break;
+        case Outcome::Rejected:
+            totals.rejected++;
+            word = "REJECTED";
+            break;
+        case Outcome::Failed:
+            totals.failed++;
+            word = "FAILED";
+            break;
+        case Outcome::RetryLater:
+            throw logic_error(name + " was reported as finished while it still had tries left");
+    }
+    log("result: " + word + " " + name);
+}
 
 // Sets size to the number of bytes actually hashed, which is what gets sent.
 // Returns what went wrong, or an empty string if it worked.
@@ -280,7 +319,8 @@ Outcome uploadVideo(MediaUpload::Stub& stub, const fs::path& path) {
 
 struct FolderScan {
     vector<fs::path> videos;
-    string problem;  // set if the folder could not be read, or not all of it
+    set<string> names;  // every entry, videos or not
+    string problem;     // set if the folder could not be read, or not all of it
 };
 
 // each file left out is only mentioned once, not on every scan
@@ -295,6 +335,7 @@ FolderScan listVideos(const fs::path& folder, set<string>& alreadyMentioned) {
 
     for (const fs::directory_iterator end; !error && it != end; it.increment(error)) {
         const string name = it->path().filename().string();
+        scan.names.insert(name);
 
         error_code typeError;
         const bool isFile = it->is_regular_file(typeError);
@@ -316,21 +357,43 @@ FolderScan listVideos(const fs::path& folder, set<string>& alreadyMentioned) {
     return scan;
 }
 
-// only says anything if the consumer can't be reached straight away; false means it never answered
+// Files stay in the folder after their result, so this state is only kept while
+// they do. Once one is taken away, a new file given its name counts as new.
+template <typename Value>
+void forgetMissing(map<string, Value>& entries, const set<string>& present) {
+    for (auto it = entries.begin(); it != entries.end();) {
+        it = present.count(it->first) > 0 ? next(it) : entries.erase(it);
+    }
+}
+
+void forgetMissing(set<string>& entries, const set<string>& present) {
+    for (auto it = entries.begin(); it != entries.end();) {
+        it = present.count(*it) > 0 ? next(it) : entries.erase(it);
+    }
+}
+
+// Waits for as long as it takes, because the command line program watches the
+// consumer and says when it has stopped. Only says anything if the consumer can't
+// be reached straight away. false means this producer is being stopped.
 bool waitForConsumer(const shared_ptr<grpc::Channel>& channel, const string& address) {
-    const auto giveUpAt = chrono::steady_clock::now() + chrono::seconds(consumerWaitSeconds);
+    const auto started = chrono::steady_clock::now();
+    auto remindAt = started + chrono::seconds(consumerReminderSeconds);
     bool reported = false;
     while (!stopping) {
         const auto deadline = chrono::system_clock::now() + chrono::seconds(1);
-        if (channel->WaitForConnected(deadline)) return true;
+        if (channel->WaitForConnected(deadline)) {
+            if (reported) log("the consumer at " + address + " can be reached again");
+            return true;
+        }
 
+        const auto now = chrono::steady_clock::now();
         if (!reported) {
             log("waiting for the consumer at " + address);
             reported = true;
-        }
-        if (chrono::steady_clock::now() >= giveUpAt) {
-            log("gave up, the consumer at " + address + " did not answer for " + to_string(consumerWaitSeconds) + " seconds");
-            return false;
+        } else if (now >= remindAt) {
+            const auto waited = chrono::duration_cast<chrono::seconds>(now - started).count();
+            log("still waiting for the consumer at " + address + ", " + to_string(waited) + " seconds so far");
+            remindAt += chrono::seconds(consumerReminderSeconds);
         }
     }
     return false;
@@ -359,7 +422,7 @@ int run() {
     const int scanSeconds = envPositiveNumber("SCAN_SECONDS", "2");
 
     if (folder.empty()) {
-        log("VIDEO_DIR is not set, it must name the folder to read");
+        log("VIDEO_DIR is not set, it must name the folder to watch");
         return 1;
     }
 
@@ -372,12 +435,10 @@ int run() {
     auto channel = grpc::CreateCustomChannel(address, grpc::InsecureChannelCredentials(), channelArguments);
     auto stub = MediaUpload::NewStub(channel);
     if (!waitForConsumer(channel, address)) {
-        if (stopping) {
-            log("stopped");
-            return 0;
-        }
-        return 1;
+        log("stopped");
+        return 0;
     }
+    log("watching " + folder.string() + " for videos");
 
     map<string, FileState> lastSeen;  // seen on the previous scan, not uploaded yet
     map<string, FileState> finished;  // already has a final result
@@ -386,12 +447,9 @@ int run() {
     set<string> mentioned;            // already logged as left out or still changing
     Totals totals;
     int folderFailures = 0;
-    bool folderGaveUp = false;
-    bool consumerGone = false;
 
     while (!stopping) {
         bool anyFinished = false;
-        bool allFinished = true;
 
         const FolderScan scan = listVideos(folder, mentioned);
         if (scan.problem.empty()) {
@@ -406,17 +464,19 @@ int run() {
                     continue;
                 }
                 log(seen->first + ": FAILED, it disappeared before it could be uploaded");
-                totals.failed++;
+                reportResult(totals, Outcome::Failed, seen->first);
                 anyFinished = true;
                 seen = lastSeen.erase(seen);
             }
+            forgetMissing(finished, present);
+            forgetMissing(attempts, present);
+            forgetMissing(gaveUp, present);
+            forgetMissing(mentioned, scan.names);
         } else {
-            allFinished = false;
             folderFailures++;
             if (folderFailures >= maxAttempts) {
-                log("gave up after " + to_string(maxAttempts) + " tries, " + scan.problem);
-                folderGaveUp = true;
-                break;
+                log("stopped watching after " + to_string(maxAttempts) + " tries in a row, " + scan.problem + ", " + totals.text());
+                return 1;
             }
             log(scan.problem + ", will try again");
         }
@@ -426,8 +486,6 @@ int run() {
             if (++attempts[name] < maxAttempts) return false;
             gaveUp.insert(name);
             lastSeen.erase(name);
-            totals.failed++;
-            anyFinished = true;
             return true;
         };
 
@@ -445,9 +503,10 @@ int run() {
                 const string problem = (sizeError ? sizeError : timeError).message();
                 if (outOfTries(name)) {
                     log(name + ": FAILED after " + to_string(maxAttempts) + " tries, could not check the file: " + problem);
+                    reportResult(totals, Outcome::Failed, name);
+                    anyFinished = true;
                 } else {
                     log(name + ": could not check the file, will try again: " + problem);
-                    allFinished = false;
                 }
                 continue;
             }
@@ -461,7 +520,6 @@ int run() {
                     log(name + ": still being written, it will be sent when it stops changing");
                 }
                 lastSeen[name] = state;  // new or still changing, look again next scan
-                allFinished = false;
                 continue;
             }
 
@@ -470,47 +528,27 @@ int run() {
                 if (stopping) break;
                 if (outOfTries(name)) {
                     log(name + ": FAILED, gave up after " + to_string(maxAttempts) + " tries");
+                    reportResult(totals, Outcome::Failed, name);
+                    anyFinished = true;
                     continue;
                 }
-                allFinished = false;
-                if (!waitForConsumer(channel, address)) {
-                    consumerGone = !stopping;
-                    break;
-                }
+                // only false when this producer is being stopped
+                if (!waitForConsumer(channel, address)) break;
                 continue;
             }
 
-            if (outcome == Outcome::Uploaded) totals.uploaded++;
-            if (outcome == Outcome::Dropped) totals.dropped++;
-            if (outcome == Outcome::Duplicate) totals.duplicates++;
-            if (outcome == Outcome::Rejected) totals.rejected++;
-            if (outcome == Outcome::Failed) totals.failed++;
+            reportResult(totals, outcome, name);
             finished[name] = state;
             lastSeen.erase(name);
             anyFinished = true;
         }
 
-        if (anyFinished) {
-            log("totals: " + to_string(totals.uploaded) + " uploaded, " + to_string(totals.dropped) + " dropped, " +
-                to_string(totals.duplicates) + " duplicate, " + to_string(totals.rejected) + " rejected, " +
-                to_string(totals.failed) + " failed");
-        }
-        if (consumerGone || allFinished) break;
+        if (anyFinished) log(totals.text());
         sleepUnlessStopped(scanSeconds);
     }
 
-    if (stopping) {
-        log("stopped");
-        return 0;
-    }
-
-    if (totals.all() == 0 && !folderGaveUp && !consumerGone) {
-        log("no videos found");
-    }
-    log(folderGaveUp || consumerGone ? "finished early, not everything at this path was uploaded" : "finished");
-
-    // the consumer's own answers, even a refusal, count as a result; 1 means something never got one
-    return totals.failed > 0 || folderGaveUp || consumerGone ? 1 : 0;
+    log("stopped, " + totals.text());
+    return 0;
 }
 
 int main() {

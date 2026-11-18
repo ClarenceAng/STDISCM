@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% from "_macros.html" import failure_box, standby_note %}
+{% block title %}My classes{% endblock %}
+{% block content %}
+<h1>My classes</h1>
+{{ failure_box(failure) }}
+{{ standby_note(from_standby) }}
+
+{% if data %}
+  {% if data.classes %}
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Term</th><th>Course</th><th>Title</th><th>Section</th><th>Schedule</th><th class="num">Students</th><th class="num">Graded</th><th></th></tr></thead>
+      <tbody>
+      {% for c in data.classes %}
+        <tr>
+          <td class="nowrap">{{ c.offering.term.label }}</td>
+          <td class="code">{{ c.offering.course_code }}</td>
+          <td>{{ c.offering.title }}</td>
+          <td>{{ c.offering.section }}</td>
+          <td>{{ c.offering.schedule }}</td>
+          <td class="num">{{ c.offering.enrolled }}</td>
+          <td class="num">{{ c.graded }}</td>
+          <td class="action"><a class="button small" href="{{ url_for('roster', offering_id=c.offering.id) }}">
+            {% if c.offering.term.enrollment_open %}Students{% else %}Grades{% endif %}</a></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  {% else %}
+    <p class="empty">You aren't assigned to any sections.</p>
+  {% endif %}
+{% endif %}
+{% endblock %}

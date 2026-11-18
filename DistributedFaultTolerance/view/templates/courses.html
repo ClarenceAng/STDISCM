@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% from "_macros.html" import failure_box, standby_note, seats %}
+{% block title %}Courses{% endblock %}
+{% block content %}
+<div class="heading">
+  <h1>Courses</h1>
+  {% if terms %}
+    <form method="get" class="inline">
+      <label>Term
+        <select name="term" onchange="this.form.submit()">
+          {% for t in terms %}
+            <option value="{{ t.code }}"{% if listing and listing.term.code == t.code %} selected{% endif %}>
+              {{ t.label }}{% if t.enrollment_open %} (enrollment open){% endif %}
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+      <noscript><button type="submit">Show</button></noscript>
+    </form>
+  {% endif %}
+</div>
+
+{{ failure_box(failure) }}
+{% if failure and user.role == "student" and failure.kind in ("down", "timeout") %}
+  <p class="muted">You can still enroll if you know the course code and section:
+    <a href="{{ url_for('enrollments') }}">My enrollments</a> has a form that only needs the Enrollment node.</p>
+{% endif %}
+{{ standby_note(from_standby) }}
+
+{% if listing %}
+  {% set can_enroll = user.role == "student" and listing.term.enrollment_open %}
+  <p class="lead">{{ listing.term.label }}{% if listing.term.enrollment_open %}: enrollment is open{% endif %}.</p>
+  {% if listing.offerings %}
+    <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Course</th><th>Title</th><th>Units</th><th>Section</th><th>Schedule</th><th>Room</th>
+            <th>Faculty</th><th>Seats</th>{% if can_enroll %}<th></th>{% endif %}</tr>
+      </thead>
+      <tbody>
+      {% for o in listing.offerings %}
+        <tr>
+          <td class="code">{{ o.course_code }}</td>
+          <td>{{ o.title }}</td>
+          <td class="num">{{ o.units }}</td>
+          <td>{{ o.section }}</td>
+          <td>{{ o.schedule }}</td>
+          <td>{{ o.room }}</td>
+          <td>{{ o.faculty_name or "—" }}</td>
+          <td class="nowrap">{{ seats(o) }}</td>
+          {% if can_enroll %}
+            <td class="action">
+              {% if o.enrolled_by_me %}
+                <span class="badge mine">enrolled</span>
+              {% elif (o|seat_state) == "open" %}
+                <form method="post" action="{{ url_for('enroll') }}">
+                  <input type="hidden" name="offering_id" value="{{ o.id }}">
+                  <input type="hidden" name="back" value="{{ request.full_path }}">
+                  <button type="submit" class="primary small">Enroll</button>
+                </form>
+              {% endif %}
+            </td>
+          {% endif %}
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  {% else %}
+    <p class="empty">No sections are offered in this term.</p>
+  {% endif %}
+{% endif %}
+{% endblock %}

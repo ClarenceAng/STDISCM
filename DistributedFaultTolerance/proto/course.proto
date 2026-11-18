@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package enrollsys;
+
+import "common.proto";
+
+// Runs on the course node. Read only.
+service CourseService {
+  rpc ListTerms(ListTermsRequest) returns (ListTermsReply);
+  rpc ListOfferings(ListOfferingsRequest) returns (ListOfferingsReply);
+}
+
+message ListOfferingsRequest {
+  string term_code = 1;       // empty: the term whose enrollment is open
+}
+
+message ListOfferingsReply {
+  Term term = 1;
+  repeated Offering offerings = 2;
+}

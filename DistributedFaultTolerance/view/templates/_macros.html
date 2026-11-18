@@ -1,0 +1,23 @@
+{% macro failure_box(f) -%}
+  {% if f %}
+    <div class="notice error node-failure" data-kind="{{ f.kind }}">
+      <div class="text">{{ f.message }}</div>
+      {% if f.detail %}<div class="detail">{{ f.node }} node: {{ f.detail }}</div>{% endif %}
+    </div>
+  {% endif %}
+{%- endmacro %}
+
+{% macro standby_note(flag) -%}
+  {% if flag %}
+    <div class="notice info">
+      <div class="text">The primary database can't be reached right now, so this page was read from the standby copy.
+        Changes can be saved again as soon as the standby takes over as primary.</div>
+    </div>
+  {% endif %}
+{%- endmacro %}
+
+{% macro seats(o) -%}
+  {% set state = o|seat_state %}
+  <span class="seats">{{ o.enrolled }}/{{ o.capacity }}</span>
+  <span class="badge {{ state }}">{{ state }}</span>
+{%- endmacro %}

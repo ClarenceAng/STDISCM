@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% from "_macros.html" import failure_box, standby_note %}
+{% block title %}Grades{% endblock %}
+{% block content %}
+<p class="crumb"><a href="{{ url_for('classes') }}">← My classes</a></p>
+{{ failure_box(failure) }}
+{{ standby_note(from_standby) }}
+
+{% if data %}
+  {% set o = data.offering %}
+  {% set gradable = not o.term.enrollment_open %}
+  <h1>{{ o.course_code }} {{ o.section }} <span class="muted">{{ o.title }}</span></h1>
+  <p class="lead">{{ o.term.label }} · {{ o.schedule }} · {{ o.room }} · {{ data.students|length }} students</p>
+
+  {% if not gradable %}
+    <div class="notice info"><div class="text">This term hasn't started yet, so its grades can't be uploaded.</div></div>
+  {% endif %}
+
+  {% if data.students %}
+    <form method="post" action="{{ url_for('upload_form_grades', offering_id=offering_id) }}" class="card">
+      <div class="table-wrap">
+      <table>
+        <thead><tr><th>Username</th><th>Name</th><th class="num">Grade</th></tr></thead>
+        <tbody>
+        {% for s in data.students %}
+          <tr>
+            <td class="code">{{ s.student.username }}</td>
+            <td>{{ s.student.full_name }}</td>
+            <td class="num">
+              {% if gradable %}
+                <select name="grade:{{ s.student.username }}" aria-label="Grade for {{ s.student.full_name }}">
+                  <option value=""{% if not s.grade %} selected{% endif %}>—</option>
+                  {% for value in GRADES %}
+                    <option value="{{ value }}"{% if s.grade == value %} selected{% endif %}>{{ value }}</option>
+                  {% endfor %}
+                </select>
+              {% else %}
+                {{ s.grade or "—" }}
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% if gradable %}<div class="actions"><button type="submit" class="primary">Save grades</button></div>{% endif %}
+    </form>
+
+    {% if gradable %}
+      <form method="post" action="{{ url_for('upload_csv_grades', offering_id=offering_id) }}" enctype="multipart/form-data" class="card stack">
+        <h2>Upload a CSV file</h2>
+        <p class="muted">One student per line as <code>username,grade</code>, for example <code>student01,3.5</code>.
+          A header line is fine. Grades: {{ GRADES|join(", ") }}. Nothing is saved unless every line is valid.</p>
+        <div class="row">
+          <input type="file" name="file" accept=".csv,text/csv" required>
+          <button type="submit" class="primary">Upload</button>
+        </div>
+      </form>
+    {% endif %}
+  {% else %}
+    <p class="empty">No students are enrolled in this section.</p>
+  {% endif %}
+{% endif %}
+{% endblock %}

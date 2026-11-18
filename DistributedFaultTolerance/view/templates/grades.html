@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% from "_macros.html" import failure_box, standby_note %}
+{% block title %}My grades{% endblock %}
+{% block content %}
+<h1>My grades</h1>
+{{ failure_box(failure) }}
+{{ standby_note(from_standby) }}
+
+{% if data %}
+  {% if data.terms %}
+    <p class="lead">Cumulative GPA <strong>{{ data.cumulative_gpa or "—" }}</strong> over {{ data.graded_units }} graded units.</p>
+    {% for t in data.terms|reverse %}
+      <section class="card term">
+        <div class="heading">
+          <h2>{{ t.term.label }}</h2>
+          <span class="muted">{% if t.gpa %}GPA {{ t.gpa }} · {{ t.graded_units }} units{% else %}grades not posted yet{% endif %}</span>
+        </div>
+        <div class="table-wrap">
+        <table>
+          <thead><tr><th>Course</th><th>Title</th><th>Units</th><th>Section</th><th>Faculty</th><th class="num">Grade</th></tr></thead>
+          <tbody>
+          {% for c in t.courses %}
+            <tr>
+              <td class="code">{{ c.offering.course_code }}</td>
+              <td>{{ c.offering.title }}</td>
+              <td class="num">{{ c.offering.units }}</td>
+              <td>{{ c.offering.section }}</td>
+              <td>{{ c.offering.faculty_name or "—" }}</td>
+              <td class="num grade{% if c.grade == '0.0' %} failed{% endif %}">{{ c.grade or "not posted" }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        </div>
+      </section>
+    {% endfor %}
+  {% else %}
+    <p class="empty">You have no grades yet.</p>
+  {% endif %}
+{% endif %}
+{% endblock %}

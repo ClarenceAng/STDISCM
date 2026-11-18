@@ -1,16 +1,16 @@
-# most producers running at once, paths typed while they're all busy wait for one
-p=3
+# producers, each watching its own folder, videos/producer-1 to videos/producer-p
+p=5
 # consumer threads
-c=2
+c=10
 # max queue length, uploads beyond this are dropped
-q=2
+q=5
 
 # optional, these are the defaults
 # port for the browser GUI
 http_port=8080
 # videos taller than this are scaled down when compressed
 compress_height=480
-# seconds a producer waits between looks at its path, to be sure files have finished copying
+# seconds between looks at the folders, to be sure files have finished copying
 scan_seconds=2
 # largest single video the consumer accepts, in MB
 max_upload_mb=2048

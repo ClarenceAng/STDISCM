@@ -1,0 +1,189 @@
+# Every node is its own container. They only talk to each other over gRPC, except that the
+# backend nodes and dbmonitor talk to the two PostgreSQL nodes over the PostgreSQL protocol.
+#
+#   view        :8080   web pages (the V of MVC); the only port published to the host
+#   auth        :50051  login / logout, signs session tokens
+#   course      :50052  terms and sections
+#   enrollment  :50053  enroll / drop (row-level locking)
+#   grade       :50054  students' grades, faculty grade upload
+#   admin       :50055  the registrar manages sections (extra node)
+#   dbmonitor   :50056  watches db1 and db2 and fails over (redundant database)
+#   db1, db2            PostgreSQL primary and synchronous standby, either way round
+
+name: enrollment
+
+# Demo passwords for a class project on one machine. Change them for anything else.
+x-db-passwords: &db-passwords
+  POSTGRES_PASSWORD: postgres-demo-password
+  REPLICATION_PASSWORD: replicator-demo-password
+  APP_DB_PASSWORD: app-demo-password
+
+x-node: &node
+  build:
+    context: .
+    dockerfile: services/Dockerfile
+  image: enrollment-node
+  restart: unless-stopped
+  depends_on:
+    setup:
+      condition: service_completed_successfully
+
+x-db-client: &db-client
+  DB_HOSTS: db1,db2
+  DB_NAME: enrollment
+  DB_USER: app
+  DB_PASSWORD: app-demo-password
+  PUBLIC_KEY_PATH: /keys/public/jwt-public.pem
+
+x-db-node: &db-node
+  build:
+    context: .
+    dockerfile: database/Dockerfile
+  image: enrollment-db
+  restart: unless-stopped
+  depends_on:
+    setup:
+      condition: service_completed_successfully
+
+services:
+  # Runs once: makes the token signing keys and prepares the cluster-state volume.
+  setup:
+    build:
+      context: .
+      dockerfile: services/Dockerfile
+    image: enrollment-node
+    user: "0:0"
+    restart: "no"
+    command: >-
+      python -m common.initialize
+      --private /keys/private/jwt-private.pem
+      --public /keys/public/jwt-public.pem
+      --state-dir /cluster-state
+    volumes:
+      - auth-private-key:/keys/private
+      - public-key:/keys/public
+      - cluster-state:/cluster-state
+
+  db1:
+    <<: *db-node
+    environment:
+      <<: *db-passwords
+      POSTGRES_DB: enrollment
+      NODE_NAME: db1
+      PEER_NAME: db2
+    volumes:
+      - db1-data:/var/lib/postgresql/data
+      - cluster-state:/cluster-state:ro
+
+  db2:
+    <<: *db-node
+    environment:
+      <<: *db-passwords
+      POSTGRES_DB: enrollment
+      NODE_NAME: db2
+      PEER_NAME: db1
+    volumes:
+      - db2-data:/var/lib/postgresql/data
+      - cluster-state:/cluster-state:ro
+
+  dbmonitor:
+    <<: *node
+    command: ["python", "-m", "dbmonitor"]
+    environment:
+      GRPC_PORT: "50056"
+      DB_HOSTS: db1,db2
+      DB_SUPERUSER_PASSWORD: postgres-demo-password
+      STATE_FILE: /cluster-state/primary
+    volumes:
+      - cluster-state:/cluster-state
+
+  auth:
+    <<: *node
+    command: ["python", "-m", "auth"]
+    environment:
+      <<: *db-client
+      GRPC_PORT: "50051"
+      PRIVATE_KEY_PATH: /keys/private/jwt-private.pem
+      SESSION_MINUTES: "120"
+    volumes:
+      - public-key:/keys/public:ro
+      - auth-private-key:/keys/private:ro
+
+  course:
+    <<: *node
+    command: ["python", "-m", "course"]
+    environment:
+      <<: *db-client
+      GRPC_PORT: "50052"
+    volumes:
+      - public-key:/keys/public:ro
+
+  enrollment:
+    <<: *node
+    command: ["python", "-m", "enrollment"]
+    environment:
+      <<: *db-client
+      GRPC_PORT: "50053"
+    volumes:
+      - public-key:/keys/public:ro
+
+  grade:
+    <<: *node
+    command: ["python", "-m", "grade"]
+    environment:
+      <<: *db-client
+      GRPC_PORT: "50054"
+    volumes:
+      - public-key:/keys/public:ro
+
+  admin:
+    <<: *node
+    command: ["python", "-m", "admin"]
+    environment:
+      <<: *db-client
+      GRPC_PORT: "50055"
+    volumes:
+      - public-key:/keys/public:ro
+
+  view:
+    build:
+      context: .
+      dockerfile: view/Dockerfile
+    image: enrollment-view
+    restart: unless-stopped
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    ports:
+      - "${VIEW_PORT:-8080}:8080"
+    environment:
+      AUTH_ADDR: auth:50051
+      COURSE_ADDR: course:50052
+      ENROLLMENT_ADDR: enrollment:50053
+      GRADE_ADDR: grade:50054
+      ADMIN_ADDR: admin:50055
+      DBMONITOR_ADDR: dbmonitor:50056
+      PUBLIC_KEY_PATH: /keys/public/jwt-public.pem
+      RPC_TIMEOUT: "8"
+      DISPLAY_TZ: Asia/Manila
+    volumes:
+      - public-key:/keys/public:ro
+
+  # Not started by `up`. Run it with: docker compose run --rm race-test
+  race-test:
+    <<: *node
+    profiles: ["tools"]
+    restart: "no"
+    entrypoint: ["python", "-m", "tools.race_test"]
+    command: []
+    environment:
+      AUTH_ADDR: auth:50051
+      ADMIN_ADDR: admin:50055
+      ENROLLMENT_ADDR: enrollment:50053
+
+volumes:
+  db1-data:
+  db2-data:
+  cluster-state:
+  public-key:
+  auth-private-key:

@@ -5,3 +5,6 @@ tools/upload_cli.exe
 
 # everything the consumer saves
 storage/
+
+# where you put videos to upload, and the producers' folders inside it
+videos/

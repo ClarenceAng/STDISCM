@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package enrollsys;
+
+// Messages shared by more than one node.
+
+// A school term. Grades belong to terms that have ended or are running,
+// and students enroll in the one term whose enrollment is open.
+message Term {
+  string code = 1;            // e.g. "2026-27-T2"
+  string label = 2;           // e.g. "AY 2026-2027, Term 2"
+  bool enrollment_open = 3;
+}
+
+message User {
+  int64 id = 1;
+  string username = 2;
+  string full_name = 3;
+  string role = 4;            // "student", "faculty" or "admin"
+}
+
+// One section of a course in one term.
+message Offering {
+  int64 id = 1;
+  string course_code = 2;
+  string title = 3;
+  int32 units = 4;
+  Term term = 5;
+  string section = 6;
+  string schedule = 7;
+  string room = 8;
+  int64 faculty_id = 9;       // 0 when no faculty is assigned
+  string faculty_name = 10;
+  int32 capacity = 11;
+  int32 enrolled = 12;
+  bool open = 13;             // admins open and close sections
+  bool enrolled_by_me = 14;   // only filled in for students
+}
+
+message ListTermsRequest {}
+
+message ListTermsReply {
+  repeated Term terms = 1;    // oldest first
+}

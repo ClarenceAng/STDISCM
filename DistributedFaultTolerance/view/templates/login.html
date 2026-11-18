@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% from "_macros.html" import failure_box %}
+{% block title %}Sign in{% endblock %}
+{% block content %}
+<section class="login">
+  <h1>Sign in</h1>
+
+  {% if auth and auth.state != "up" %}
+    <div class="notice warning">
+      <div class="text">The Auth node isn't answering, so signing in may fail right now.
+        Anyone already signed in can keep using the system.</div>
+      <div class="detail">{{ auth.detail }}</div>
+    </div>
+  {% endif %}
+  {% if signed_out %}
+    <div class="notice warning"><div class="text">{{ signed_out.message }}</div></div>
+  {% endif %}
+  {{ failure_box(failure) }}
+
+  <form method="post" action="{{ url_for('login') }}" class="card stack">
+    {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+    <label>Username <input name="username" value="{{ username or '' }}" autocomplete="username" required autofocus></label>
+    <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+    <button type="submit" class="primary">Sign in</button>
+  </form>
+
+  <details class="hint">
+    <summary>Demo accounts</summary>
+    <p>Every password is <code>password</code>.</p>
+    <ul>
+      <li><code>student01</code> … <code>student60</code>: students (01–40 have earlier grades)</li>
+      <li><code>msantos</code>, <code>jreyes</code>, <code>acruz</code>, <code>mtan</code>: faculty</li>
+      <li><code>admin</code>: the registrar</li>
+    </ul>
+  </details>
+</section>
+{% endblock %}

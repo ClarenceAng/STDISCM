@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% from "_macros.html" import failure_box %}
+{% block title %}System status{% endblock %}
+{% block head %}<meta http-equiv="refresh" content="3">{% endblock %}
+{% block content %}
+<div class="heading">
+  <h1>System status</h1>
+  <span class="muted">Checked {{ now|when }} · refreshes every 3 s</span>
+</div>
+
+<section class="card">
+  <h2>Nodes</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Node</th><th>Serves</th><th>Address</th><th>Health</th><th class="num">Answered in</th><th>Detail</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>View</strong></td><td>these pages</td><td>port 8080</td>
+        <td><span class="badge up">up</span></td><td class="num">—</td><td class="muted">it rendered this page</td>
+      </tr>
+      {% for h in healths %}
+        <tr>
+          <td><strong>{{ h.node.label }}</strong></td>
+          <td>{{ h.node.feature }}</td>
+          <td class="code">{{ h.address }}</td>
+          <td><span class="badge {{ h.state|replace(' ', '-') }}">{{ h.state }}</span></td>
+          <td class="num">{{ "%.0f"|format(h.ms) }} ms</td>
+          <td class="muted small">{% if h.state != "up" %}{{ h.detail }}{% endif %}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Database cluster</h2>
+  {% if cluster.ok %}
+    {% set c = cluster.reply %}
+    <p class="lead">Primary: <strong>{{ c.designated_primary }}</strong>.
+      {% if c.synchronous_standby_names %}Commits wait for the standby (synchronous replication).
+      {% else %}Commits don't wait for a standby right now.{% endif %}
+      {% set standby_up = c.nodes|selectattr("name", "ne", c.designated_primary)|selectattr("reachable")|list %}
+      {% if c.standby_in_sync and standby_up %}The standby is in sync, so it can take over without losing a commit.
+      {% elif c.standby_in_sync %}When last seen, the standby was in sync, so it can take over once it answers.
+      {% else %}The standby is not in sync, so it won't be promoted automatically.{% endif %}</p>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Database node</th><th>Role</th><th>Replication</th><th class="num">Standby lag</th><th>Detail</th></tr></thead>
+      <tbody>
+      {% for n in c.nodes %}
+        <tr>
+          <td><strong>{{ n.name }}</strong></td>
+          <td><span class="badge {{ n.role if n.reachable else 'down' }}">{{ n.role if n.reachable else "down" }}</span></td>
+          <td>{{ n.replication }}</td>
+          <td class="num">{% if n.lag_bytes >= 0 %}{{ n.lag_bytes }} bytes{% endif %}</td>
+          <td class="muted small">{{ n.error }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    <h3>Recent events</h3>
+    <ul class="events">
+      {% for e in c.events[:12] %}<li><span class="muted">{{ e.at|when }}</span> {{ e.message }}</li>{% endfor %}
+    </ul>
+  {% else %}
+    {{ failure_box(cluster.failure) }}
+    <p class="muted">Without the monitor there is no automatic failover, but the database and every other node keep working.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Connection pools</h2>
+  <p class="muted">Each backend node lends its request threads connections from a pool instead of opening one per request.
+    "Reused" counts the requests that got an already-open connection.</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Node</th><th>Pool</th><th class="num">Open / max</th><th class="num">In use</th><th class="num">Idle</th>
+        <th class="num">Borrowed</th><th class="num">Reused</th><th class="num">Opened</th><th class="num">Waited</th><th>Last database node</th><th>Connect error</th></tr></thead>
+    <tbody>
+    {% for name, info in infos.items() %}
+      {% if info.ok %}
+        {% for p in info.reply.pools %}
+          <tr>
+            <td>{% if loop.first %}<strong>{{ name }}</strong>{% endif %}</td>
+            <td>{{ p.name }}</td>
+            <td class="num">{{ p.open }} / {{ p.max_size }}</td>
+            <td class="num">{{ p.in_use }}</td>
+            <td class="num">{{ p.idle }}</td>
+            <td class="num">{{ p.checkouts }}</td>
+            <td class="num">{{ p.reused }}</td>
+            <td class="num">{{ p.connections_made }}</td>
+            <td class="num">{{ p.waited }}</td>
+            <td>{{ p.last_host or "—" }}</td>
+            <td class="muted small">{{ p.last_error }}</td>
+          </tr>
+        {% endfor %}
+      {% else %}
+        <tr><td><strong>{{ name }}</strong></td><td colspan="10" class="muted">no answer: {{ info.failure.detail }}</td></tr>
+      {% endif %}
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endblock %}

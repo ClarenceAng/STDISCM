@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package enrollsys;
+
+// Runs on the dbmonitor node, which watches the two PostgreSQL nodes and promotes the standby
+// when the primary stops answering.
+service DbCluster {
+  rpc GetStatus(GetStatusRequest) returns (ClusterStatus);
+}
+
+message DbNode {
+  string name = 1;
+  bool reachable = 2;
+  string role = 3;            // "primary", "standby" or "" when unreachable
+  string error = 4;           // why it is unreachable
+  string replication = 5;     // primary: how its standby is attached; standby: its WAL receiver state
+  int64 lag_bytes = 6;        // primary only: WAL the standby has not replayed yet, -1 when unknown
+}
+
+message ClusterEvent {
+  int64 at = 1;               // Unix seconds
+  string message = 2;
+}
+
+message GetStatusRequest {}
+
+message ClusterStatus {
+  string designated_primary = 1;
+  repeated DbNode nodes = 2;
+  string synchronous_standby_names = 3;   // on the primary: "*" while commits wait for the standby
+  bool standby_in_sync = 4;               // safe to promote without losing acknowledged commits
+  repeated ClusterEvent events = 5;       // newest first
+  int64 checked_at = 6;
+}

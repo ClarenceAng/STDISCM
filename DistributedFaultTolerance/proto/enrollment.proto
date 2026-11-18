@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package enrollsys;
+
+import "common.proto";
+
+// Runs on the enrollment node. Students only.
+service EnrollmentService {
+  // Takes a row lock on the section so that two students can't both take its last seat.
+  rpc Enroll(EnrollRequest) returns (EnrollReply);
+  rpc Drop(DropRequest) returns (DropReply);
+  rpc ListMyEnrollments(ListMyEnrollmentsRequest) returns (ListMyEnrollmentsReply);
+}
+
+// Either offering_id (the Enroll button on the course list), or course_code and section in the
+// term open for enrollment (the form on My enrollments, which works while the course node is down).
+message EnrollRequest {
+  int64 offering_id = 1;
+  string course_code = 2;
+  string section = 3;
+}
+
+message EnrollReply {
+  Offering offering = 1;      // with the seat count after enrolling
+}
+
+message DropRequest {
+  int64 offering_id = 1;
+}
+
+message DropReply {
+  Offering offering = 1;
+}
+
+message ListMyEnrollmentsRequest {}
+
+message ListMyEnrollmentsReply {
+  Term term = 1;              // the term whose enrollment is open
+  repeated Offering offerings = 2;
+  int32 total_units = 3;
+}

@@ -1,8 +1,8 @@
 @echo off
-rem usage: run.bat [video or folder] ...     any paths given are uploaded first, then it keeps listening for more
+rem usage: run.bat     then put videos, or folders of videos, in the videos folder next to this file, and press Ctrl+C to stop
 setlocal
 
-rem no cd, so relative paths still mean relative to where this was run from
+rem the folder this script is in, with a trailing backslash
 set "ROOT=%~dp0"
 
 where g++ >nul 2>nul
@@ -24,5 +24,5 @@ if errorlevel 1 (
     exit /b 1
 )
 
-"%ROOT%tools\upload_cli.exe" "%ROOT%config.txt" "%ROOT%docker-compose.yml" %*
+"%ROOT%tools\upload_cli.exe" "%ROOT%config.txt" "%ROOT%docker-compose.yml"
 exit /b %errorlevel%

@@ -1,0 +1,7 @@
+*.md
+*.pptx
+~$*
+run.bat
+run.sh
+docker-compose.yml
+**/__pycache__

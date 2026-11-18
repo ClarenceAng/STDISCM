@@ -1,0 +1,79 @@
+syntax = "proto3";
+
+package enrollsys;
+
+import "common.proto";
+
+// Runs on the grade node.
+service GradeService {
+  // Students: their grades by term.
+  rpc ListMyGrades(ListMyGradesRequest) returns (ListMyGradesReply);
+  // Faculty: the sections they teach, their students and the grade upload.
+  rpc ListMyClasses(ListMyClassesRequest) returns (ListMyClassesReply);
+  rpc GetClassRoster(GetClassRosterRequest) returns (GetClassRosterReply);
+  rpc UploadGrades(UploadGradesRequest) returns (UploadGradesReply);
+}
+
+message GradedCourse {
+  Offering offering = 1;
+  string grade = 2;           // "" while not yet posted
+}
+
+message TermGrades {
+  Term term = 1;
+  repeated GradedCourse courses = 2;
+  string gpa = 3;             // "" when nothing in the term is graded yet
+  int32 graded_units = 4;
+}
+
+message ListMyGradesRequest {}
+
+message ListMyGradesReply {
+  repeated TermGrades terms = 1;   // oldest first, the term open for enrollment left out
+  string cumulative_gpa = 2;
+  int32 graded_units = 3;
+}
+
+message ClassSummary {
+  Offering offering = 1;      // offering.enrolled is the number of students
+  int32 graded = 2;
+}
+
+message ListMyClassesRequest {}
+
+message ListMyClassesReply {
+  repeated ClassSummary classes = 1;   // newest term first
+}
+
+message RosterEntry {
+  User student = 1;
+  string grade = 2;           // "" while not yet posted
+}
+
+message GetClassRosterRequest {
+  int64 offering_id = 1;
+}
+
+message GetClassRosterReply {
+  Offering offering = 1;
+  repeated RosterEntry students = 2;
+}
+
+message GradeEntry {
+  string username = 1;
+  string grade = 2;           // "" leaves the student's grade as it is
+}
+
+// Send either entries (the web form) or csv (an uploaded file of "username,grade" lines), not both.
+// csv is the file as uploaded; the grade node decodes and checks it. Nothing is saved unless every
+// line is valid.
+message UploadGradesRequest {
+  int64 offering_id = 1;
+  repeated GradeEntry entries = 2;
+  bytes csv = 3;
+}
+
+message UploadGradesReply {
+  int32 changed = 1;
+  int32 unchanged = 2;
+}

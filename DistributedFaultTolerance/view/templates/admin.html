@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% from "_macros.html" import failure_box, standby_note, seats %}
+{% block title %}Sections{% endblock %}
+{% block content %}
+<div class="heading">
+  <h1>Sections</h1>
+  {% if terms %}
+    <form method="get" class="inline">
+      <label>Term
+        <select name="term" onchange="this.form.submit()">
+          {% for t in terms %}
+            <option value="{{ t.code }}"{% if listing and listing.term.code == t.code %} selected{% endif %}>
+              {{ t.label }}{% if t.enrollment_open %} (enrollment open){% endif %}
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+      <noscript><button type="submit">Show</button></noscript>
+    </form>
+  {% endif %}
+</div>
+
+{{ failure_box(failure) }}
+{{ standby_note(from_standby) }}
+
+{% macro faculty_select(selected) -%}
+  <select name="faculty_id">
+    <option value="0"{% if not selected %} selected{% endif %}>— none —</option>
+    {% for f in faculty %}
+      <option value="{{ f.id }}"{% if f.id == selected %} selected{% endif %}>{{ f.full_name }}</option>
+    {% endfor %}
+  </select>
+{%- endmacro %}
+
+{% if listing %}
+  <p class="lead">{{ listing.term.label }}. Capacity, open/closed and faculty are saved per row.</p>
+  {% if listing.offerings %}
+    <div class="table-wrap">
+    <table class="admin">
+      <thead><tr><th>Course</th><th>Section</th><th>Schedule</th><th>Seats</th><th colspan="4">Capacity · open · faculty</th></tr></thead>
+      <tbody>
+      {% for o in listing.offerings %}
+        <tr>
+          <td><span class="code">{{ o.course_code }}</span><div class="muted small">{{ o.title }}</div></td>
+          <td>{{ o.section }}</td>
+          <td>{{ o.schedule }}<div class="muted small">{{ o.room }}</div></td>
+          <td class="nowrap">{{ seats(o) }}</td>
+          <td colspan="4">
+            <form method="post" action="{{ url_for('update_section', offering_id=o.id) }}" class="row-form">
+              <input type="hidden" name="term_code" value="{{ listing.term.code }}">
+              <input type="number" name="capacity" value="{{ o.capacity }}" min="1" max="500" required aria-label="Capacity">
+              <input type="checkbox" name="open"{% if o.open %} checked{% endif %} aria-label="Open">
+              {{ faculty_select(o.faculty_id) }}
+              <button type="submit" class="small">Save</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  {% else %}
+    <p class="empty">No sections in this term yet.</p>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('create_section') }}" class="card">
+    <h2>Add a section</h2>
+    <p class="muted">Title and units are only needed for a course that doesn't exist yet.</p>
+    <div class="grid">
+      <label>Course code <input name="course_code" placeholder="STDISCM" required></label>
+      <label>Title <input name="title" placeholder="for a new course"></label>
+      <label>Units <input name="units" type="number" min="1" max="6" placeholder="3"></label>
+      <label>Term
+        <select name="term_code" required>
+          {% for t in terms %}<option value="{{ t.code }}"{% if t.code == listing.term.code %} selected{% endif %}>{{ t.label }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Section <input name="section" placeholder="S13" required></label>
+      <label>Schedule <input name="schedule" placeholder="MW 14:30-16:00"></label>
+      <label>Room <input name="room" placeholder="Room 410"></label>
+      <label>Capacity <input name="capacity" type="number" min="1" max="500" value="40" required></label>
+      <label>Faculty {{ faculty_select(0) }}</label>
+      <label class="check"><input type="checkbox" name="open" checked> Open for enrollment</label>
+    </div>
+    <div class="actions"><button type="submit" class="primary">Add section</button></div>
+  </form>
+{% endif %}
+{% endblock %}
