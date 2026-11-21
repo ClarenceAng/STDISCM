@@ -8,3 +8,6 @@ storage/
 
 # where you put videos to upload, and the producers' folders inside it
 videos/
+
+# HTTPS and gRPC certificates and keys, made by run.bat / run.sh with mkcert
+certs/

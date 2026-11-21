@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 ~$*
+
+# HTTPS and gRPC certificates and keys, made by run.bat / run.sh with mkcert
+certs/

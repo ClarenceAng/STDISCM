@@ -4,3 +4,4 @@ docker-compose.yml
 *.pptx
 *.md
 videos/
+certs/

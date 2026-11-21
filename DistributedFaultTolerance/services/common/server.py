@@ -16,7 +16,7 @@ from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 import node_pb2
 import node_pb2_grpc
 
-from . import config, logs
+from . import config, logs, tls
 from .config import ConfigError
 from .db import Database
 from .sessions import SessionVerifier
@@ -51,6 +51,7 @@ def run_node(node: str, register: Callable[[grpc.Server, NodeContext], None], *,
     try:
         port = config.integer("GRPC_PORT", 50051, 1, 65535)
         workers = config.integer("GRPC_WORKERS", 32, 1, 512)
+        credentials = tls.server_credentials()
         db = verifier = None
         if use_db:
             db = Database(node)
@@ -77,18 +78,20 @@ def run_node(node: str, register: Callable[[grpc.Server, NodeContext], None], *,
     health_pb2_grpc.add_HealthServicer_to_server(health_service, server)
     node_pb2_grpc.add_NodeInfoServicer_to_server(NodeInfoController(ctx), server)
 
+    # Callers check the certificate against mkcert's certificate authority and that it is for this
+    # node's name. The pair was checked in tls.server_credentials, so a failure here is the port.
     try:
-        bound = server.add_insecure_port(f"0.0.0.0:{port}")
+        bound = server.add_secure_port(f"0.0.0.0:{port}", credentials)
     except RuntimeError as exc:
-        log.error("cannot listen on port %d: %s", port, exc)
+        log.error("cannot listen with TLS on port %d: %s", port, exc)
         sys.exit(1)
     if bound == 0:
-        log.error("cannot listen on port %d (is it in use?)", port)
+        log.error("cannot listen with TLS on port %d (is it in use?)", port)
         sys.exit(1)
 
     server.start()
     health_service.set("", health_pb2.HealthCheckResponse.SERVING)
-    log.info("listening for gRPC on port %d with %d worker threads", port, workers)
+    log.info("listening for gRPC with TLS on port %d with %d worker threads", port, workers)
 
     stop = threading.Event()
 

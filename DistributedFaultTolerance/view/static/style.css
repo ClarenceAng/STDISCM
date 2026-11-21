@@ -104,7 +104,7 @@ td.action form { margin: 0; }
 .badge.open, .badge.up, .badge.primary, .badge.mine { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
 .badge.standby { background: var(--info-soft); color: var(--info); border-color: transparent; }
 .badge.full, .badge.timeout, .badge.not-serving { background: var(--warning-soft); color: var(--warning); border-color: transparent; }
-.badge.closed, .badge.down, .badge.error { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
+.badge.closed, .badge.down, .badge.error, .badge.TLS-refused { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
 
 /* ---- forms ---- */
 label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.88rem; color: var(--muted); }

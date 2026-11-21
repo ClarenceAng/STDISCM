@@ -1,7 +1,9 @@
 # Every node is its own container. They only talk to each other over gRPC, except that the
 # backend nodes and dbmonitor talk to the two PostgreSQL nodes over the PostgreSQL protocol.
+# The web pages are HTTPS only and every gRPC port is TLS, with certificates from mkcert (see
+# x-tls-server below).
 #
-#   view        :8080   web pages (the V of MVC); the only port published to the host
+#   view        :8080   web pages (the V of MVC), https://; the only port published to the host
 #   auth        :50051  login / logout, signs session tokens
 #   course      :50052  terms and sections
 #   enrollment  :50053  enroll / drop (row-level locking)
@@ -34,6 +36,17 @@ x-db-client: &db-client
   DB_USER: app
   DB_PASSWORD: app-demo-password
   PUBLIC_KEY_PATH: /keys/public/jwt-public.pem
+
+# run.bat / run.sh make the certificates with mkcert in certs/ before starting the containers.
+# certs/<node>/ holds that node's certificate, for its own name (the name the view dials), and its
+# private key, and is mounted in that node only. certs/ca.pem is mkcert's certificate authority
+# (its certificate, never its key), which the callers (view, race-test) trust. create_host_path:
+# false makes Docker on Linux refuse to start a node whose certificates don't exist yet. Docker
+# Desktop makes an empty folder in their place anyway; the node then reports that its file is a
+# folder, and run.bat / run.sh remove a stray empty ca.pem folder before copying the real file.
+x-tls-server: &tls-server
+  TLS_CERT_FILE: /tls/cert.pem
+  TLS_KEY_FILE: /tls/key.pem
 
 x-db-node: &db-node
   build:
@@ -90,60 +103,97 @@ services:
     <<: *node
     command: ["python", "-m", "dbmonitor"]
     environment:
+      <<: *tls-server
       GRPC_PORT: "50056"
       DB_HOSTS: db1,db2
       DB_SUPERUSER_PASSWORD: postgres-demo-password
       STATE_FILE: /cluster-state/primary
     volumes:
       - cluster-state:/cluster-state
+      - type: bind
+        source: ./certs/dbmonitor
+        target: /tls
+        read_only: true
+        bind:
+          create_host_path: false
 
   auth:
     <<: *node
     command: ["python", "-m", "auth"]
     environment:
-      <<: *db-client
+      <<: [*db-client, *tls-server]
       GRPC_PORT: "50051"
       PRIVATE_KEY_PATH: /keys/private/jwt-private.pem
       SESSION_MINUTES: "120"
     volumes:
       - public-key:/keys/public:ro
       - auth-private-key:/keys/private:ro
+      - type: bind
+        source: ./certs/auth
+        target: /tls
+        read_only: true
+        bind:
+          create_host_path: false
 
   course:
     <<: *node
     command: ["python", "-m", "course"]
     environment:
-      <<: *db-client
+      <<: [*db-client, *tls-server]
       GRPC_PORT: "50052"
     volumes:
       - public-key:/keys/public:ro
+      - type: bind
+        source: ./certs/course
+        target: /tls
+        read_only: true
+        bind:
+          create_host_path: false
 
   enrollment:
     <<: *node
     command: ["python", "-m", "enrollment"]
     environment:
-      <<: *db-client
+      <<: [*db-client, *tls-server]
       GRPC_PORT: "50053"
     volumes:
       - public-key:/keys/public:ro
+      - type: bind
+        source: ./certs/enrollment
+        target: /tls
+        read_only: true
+        bind:
+          create_host_path: false
 
   grade:
     <<: *node
     command: ["python", "-m", "grade"]
     environment:
-      <<: *db-client
+      <<: [*db-client, *tls-server]
       GRPC_PORT: "50054"
     volumes:
       - public-key:/keys/public:ro
+      - type: bind
+        source: ./certs/grade
+        target: /tls
+        read_only: true
+        bind:
+          create_host_path: false
 
   admin:
     <<: *node
     command: ["python", "-m", "admin"]
     environment:
-      <<: *db-client
+      <<: [*db-client, *tls-server]
       GRPC_PORT: "50055"
     volumes:
       - public-key:/keys/public:ro
+      - type: bind
+        source: ./certs/admin
+        target: /tls
+        read_only: true
+        bind:
+          create_host_path: false
 
   view:
     build:
@@ -164,10 +214,24 @@ services:
       ADMIN_ADDR: admin:50055
       DBMONITOR_ADDR: dbmonitor:50056
       PUBLIC_KEY_PATH: /keys/public/jwt-public.pem
+      GRPC_CA_FILE: /ca/ca.pem
       RPC_TIMEOUT: "8"
       DISPLAY_TZ: Asia/Manila
+    # gunicorn serves HTTPS with certs/view (for localhost), see view/Dockerfile
     volumes:
       - public-key:/keys/public:ro
+      - type: bind
+        source: ./certs/view
+        target: /tls
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./certs/ca.pem
+        target: /ca/ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
 
   # Not started by `up`. Run it with: docker compose run --rm race-test
   race-test:
@@ -180,6 +244,14 @@ services:
       AUTH_ADDR: auth:50051
       ADMIN_ADDR: admin:50055
       ENROLLMENT_ADDR: enrollment:50053
+      GRPC_CA_FILE: /ca/ca.pem
+    volumes:
+      - type: bind
+        source: ./certs/ca.pem
+        target: /ca/ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
 
 volumes:
   db1-data:

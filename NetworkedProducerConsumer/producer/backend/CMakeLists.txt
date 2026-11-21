@@ -18,4 +18,4 @@ add_executable(producer src/main.cpp ${PROTO_SOURCES})
 target_include_directories(producer PRIVATE ../../common ${PROTO_INCLUDE_DIR})
 target_compile_options(producer PRIVATE -Wall -Wextra)
 target_link_libraries(producer PRIVATE
-    PkgConfig::GRPCPP PkgConfig::PROTOBUF OpenSSL::Crypto Threads::Threads)
+    PkgConfig::GRPCPP PkgConfig::PROTOBUF OpenSSL::SSL OpenSSL::Crypto Threads::Threads)

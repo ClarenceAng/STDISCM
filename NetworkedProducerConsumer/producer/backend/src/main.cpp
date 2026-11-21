@@ -26,11 +26,13 @@
 #include <thread>
 #include <vector>
 
+#include <grpcpp/generic/generic_stub.h>
 #include <grpcpp/grpcpp.h>
 
 #include "error_text.h"
 #include "media_upload.grpc.pb.h"
 #include "sha256.h"
+#include "tls_files.h"
 #include "video_files.h"
 
 using namespace std;
@@ -40,6 +42,7 @@ namespace fs = std::filesystem;
 const size_t chunkSize = 1024 * 1024;
 const int maxAttempts = 5;               // tries per video, and in a row for the folder, before giving up on it
 const int consumerReminderSeconds = 60;  // how often a long wait for the consumer is mentioned again
+const int connectionCheckSeconds = 2;    // how long asking gRPC why it can't connect may take
 const int keepalivePingMs = 20000;
 const int keepaliveTimeoutMs = 10000;
 
@@ -372,13 +375,51 @@ void forgetMissing(set<string>& entries, const set<string>& present) {
     }
 }
 
+// Why the channel can't reach the consumer, or "" if it can. WaitForConnected only
+// says that it can't, so this makes a call that fails at once with gRPC's reason
+// for its last failed connection, such as a refused TLS certificate. The method
+// doesn't exist, so a consumer that is reached after all only answers UNIMPLEMENTED.
+string connectionProblem(const shared_ptr<grpc::Channel>& channel) {
+    grpc::GenericStub stub(channel);
+    grpc::CompletionQueue queue;
+    grpc::ClientContext context;
+    context.set_deadline(chrono::system_clock::now() + chrono::seconds(connectionCheckSeconds));
+    grpc::Slice empty{string()};
+    const grpc::ByteBuffer request(&empty, 1);
+    grpc::ByteBuffer reply;
+    grpc::Status status;
+
+    auto call = stub.PrepareUnaryCall(&context, "/mediaupload.MediaUpload/ConnectionCheck", request, &queue);
+    call->StartCall();
+    call->Finish(&reply, &status, &status);  // the tag is only something unique to wait for
+    void* tag = nullptr;
+    bool ok = false;
+    const bool finished = queue.Next(&tag, &ok);
+    queue.Shutdown();
+    while (queue.Next(&tag, &ok)) {
+    }
+    if (!finished) return "gRPC stopped before it could say why";
+
+    if (status.error_code() == grpc::StatusCode::UNIMPLEMENTED) return "";
+    const string reason = status.error_message() + " (gRPC code " + to_string(status.error_code()) + ")";
+    for (const char* tlsWord : {"andshake", "ertificate", "Peer name", "SSL"}) {
+        if (reason.find(tlsWord) != string::npos) {
+            return "the consumer's TLS certificate was refused, it has to be signed by mkcert's certificate authority "
+                   "in TLS_CA_FILE and be for the name in CONSUMER_ADDRESS: " + reason;
+        }
+    }
+    return reason;
+}
+
 // Waits for as long as it takes, because the command line program watches the
 // consumer and says when it has stopped. Only says anything if the consumer can't
-// be reached straight away. false means this producer is being stopped.
+// be reached straight away, and then why, again each time the reason changes.
+// false means this producer is being stopped.
 bool waitForConsumer(const shared_ptr<grpc::Channel>& channel, const string& address) {
     const auto started = chrono::steady_clock::now();
     auto remindAt = started + chrono::seconds(consumerReminderSeconds);
     bool reported = false;
+    string lastProblem;
     while (!stopping) {
         const auto deadline = chrono::system_clock::now() + chrono::seconds(1);
         if (channel->WaitForConnected(deadline)) {
@@ -386,13 +427,17 @@ bool waitForConsumer(const shared_ptr<grpc::Channel>& channel, const string& add
             return true;
         }
 
+        const string problem = connectionProblem(channel);
+        if (problem.empty()) continue;  // it connected during the check
+
         const auto now = chrono::steady_clock::now();
-        if (!reported) {
-            log("waiting for the consumer at " + address);
+        if (!reported || problem != lastProblem) {
+            log((reported ? "still waiting for the consumer at " : "waiting for the consumer at ") + address + ": " + problem);
             reported = true;
+            lastProblem = problem;
         } else if (now >= remindAt) {
             const auto waited = chrono::duration_cast<chrono::seconds>(now - started).count();
-            log("still waiting for the consumer at " + address + ", " + to_string(waited) + " seconds so far");
+            log("still waiting for the consumer at " + address + ", " + to_string(waited) + " seconds so far: " + problem);
             remindAt += chrono::seconds(consumerReminderSeconds);
         }
     }
@@ -432,7 +477,14 @@ int run() {
     channelArguments.SetInt(GRPC_ARG_KEEPALIVE_TIMEOUT_MS, keepaliveTimeoutMs);
     channelArguments.SetInt(GRPC_ARG_HTTP2_MAX_PINGS_WITHOUT_DATA, 0);
 
-    auto channel = grpc::CreateCustomChannel(address, grpc::InsecureChannelCredentials(), channelArguments);
+    // The connection is encrypted, and the consumer has to show a certificate signed by
+    // mkcert's certificate authority for the name in CONSUMER_ADDRESS ("consumer").
+    const fs::path caFile = envOr("TLS_CA_FILE", "/certs/ca.pem");
+    grpc::SslCredentialsOptions tlsOptions;
+    tlsOptions.pem_root_certs = readPemFile(caFile, "mkcert's certificate authority");
+    checkCertificates(tlsOptions.pem_root_certs, "mkcert's certificate authority " + caFile.string());
+
+    auto channel = grpc::CreateCustomChannel(address, grpc::SslCredentials(tlsOptions), channelArguments);
     auto stub = MediaUpload::NewStub(channel);
     if (!waitForConsumer(channel, address)) {
         log("stopped");

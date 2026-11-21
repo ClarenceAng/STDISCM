@@ -28,6 +28,8 @@ add_executable(consumer
 
 target_include_directories(consumer PRIVATE ../../common ${PROTO_INCLUDE_DIR} ${OpenCV_INCLUDE_DIRS})
 target_compile_options(consumer PRIVATE -Wall -Wextra)
+# gives httplib.h its HTTPS server; set for the whole target so every file sees the same classes
+target_compile_definitions(consumer PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
 target_link_libraries(consumer PRIVATE
     PkgConfig::GRPCPP PkgConfig::PROTOBUF PkgConfig::FFMPEG
-    ${OpenCV_LIBS} nlohmann_json::nlohmann_json OpenSSL::Crypto Threads::Threads)
+    ${OpenCV_LIBS} nlohmann_json::nlohmann_json OpenSSL::SSL OpenSSL::Crypto Threads::Threads)

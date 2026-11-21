@@ -103,9 +103,12 @@ class Backend:
     PROBE_EVERY = 1.0      # seconds between attempts to reach a node that went away
     PROBE_TIMEOUT = 6.0    # covers Docker's DNS, which takes about 4 s to say a name is gone
 
-    def __init__(self, addresses: dict[str, str], timeout: float):
+    def __init__(self, addresses: dict[str, str], timeout: float, root_ca: bytes):
+        """`root_ca` is mkcert's certificate authority: every channel is TLS, and only accepts a
+        node whose certificate it signed for the name in that node's address."""
         self.addresses = addresses
         self.timeout = timeout
+        self._credentials = grpc.ssl_channel_credentials(root_certificates=root_ca)
         self._lock = threading.Lock()
         self._connections = {name: self._connect(name) for name in addresses}
         self._reviving: set[str] = set()
@@ -117,7 +120,7 @@ class Backend:
             self._pool.submit(self.health, name, 6.0)
 
     def _connect(self, node: str) -> _Connection:
-        channel = grpc.insecure_channel(self.addresses[node], options=CHANNEL_OPTIONS)
+        channel = grpc.secure_channel(self.addresses[node], self._credentials, options=CHANNEL_OPTIONS)
         return _Connection(channel, NODES[node].stub(channel), health_pb2_grpc.HealthStub(channel),
                            node_pb2_grpc.NodeInfoStub(channel))
 
@@ -236,6 +239,10 @@ class Backend:
                 self._replace_channel(node, conn)
             state = {grpc.StatusCode.UNAVAILABLE: "down", grpc.StatusCode.DEADLINE_EXCEEDED: "timeout"}.get(code, "error")
             detail = f"{code.name}: {exc.details()}"
+            tls = tls_problem(exc.details() or "") if code == grpc.StatusCode.UNAVAILABLE else None
+            if tls is not None:
+                state = "TLS refused"
+                detail = f"{tls} ({detail})"
         return Health(spec, self.addresses[node], state, detail, (time.monotonic() - started) * 1000)
 
     def info(self, node: str, timeout: float = 1.5) -> Result:
@@ -267,11 +274,26 @@ def _never_arrived(exc: grpc.RpcError) -> bool:
         "failed to connect" in details or "Connection refused" in details)
 
 
+def tls_problem(details: str) -> str | None:
+    """What was wrong when gRPC's reason for UNAVAILABLE is a failed TLS handshake, else None.
+    These come from gRPC's own wording, for example "Peer name auth is not in peer certificate"
+    and "Ssl handshake failed (TSI_PROTOCOL_FAILURE): ... CERTIFICATE_VERIFY_FAILED"."""
+    if "Peer name" in details and "not in peer certificate" in details:
+        return ("the node at its address showed a certificate for another name. Either Docker has given its "
+                "address to another node, or its certificate in certs/ was made for another name")
+    if "CERTIFICATE_VERIFY_FAILED" in details or "certificate verify failed" in details:
+        return "its certificate was not signed by mkcert's certificate authority in certs/ca.pem, which the view trusts"
+    if "andshake failed" in details:
+        return "the TLS handshake with it failed"
+    return None
+
+
 def describe(spec: NodeSpec, method: str, exc: grpc.RpcError, timeout: float) -> Failure:
     code = exc.code()
     details = exc.details() or ""
     trailers = dict(exc.trailing_metadata() or ())
     label = spec.label
+    tls = tls_problem(details) if code == grpc.StatusCode.UNAVAILABLE else None
 
     if trailers.get("error-origin") == "database":
         if code == grpc.StatusCode.RESOURCE_EXHAUSTED:
@@ -281,6 +303,13 @@ def describe(spec: NodeSpec, method: str, exc: grpc.RpcError, timeout: float) ->
         return Failure(label, "database",
                        f"The {label} node is running, but it can't use the database right now, "
                        f"so {spec.feature} is unavailable.", details)
+    if tls is not None:
+        # still "down" for the pages, since the node can't be used, but the reason is its own
+        return Failure(label, "down",
+                       f"The view refused the {label} node's TLS certificate, so {spec.feature} is unavailable "
+                       f"right now: {tls}. Everything else still works. run.bat makes new certificates; a "
+                       f"running node loads its new one when it restarts (docker compose restart {spec.name}).",
+                       details)
     if code == grpc.StatusCode.UNAVAILABLE:
         return Failure(label, "down",
                        f"The {label} node can't be reached, so {spec.feature} is unavailable right now. "

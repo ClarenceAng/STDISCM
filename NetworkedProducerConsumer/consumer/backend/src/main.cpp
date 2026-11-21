@@ -29,6 +29,7 @@ extern "C" {
 #include "activity.h"
 #include "dedup_index.h"
 #include "leaky_bucket_queue.h"
+#include "tls_files.h"
 #include "upload_job.h"
 #include "upload_service.h"
 #include "video_library.h"
@@ -124,6 +125,9 @@ int main() {
         const fs::path frontendDir = envOr("FRONTEND_DIR", "/app/frontend");
         const fs::path tempDir = envOr("TEMP_DIR", "/tmp/media-upload");
 
+        // one certificate, made by mkcert for the names "consumer" and "localhost", serves both the GUI and gRPC
+        const ServerTls tls = loadServerTls(envOr("TLS_CERT_FILE", "/certs/cert.pem"), envOr("TLS_KEY_FILE", "/certs/key.pem"));
+
         resetTempDir(tempDir, dataDir);
 
         VideoLibrary library(dataDir);
@@ -139,16 +143,19 @@ int main() {
         workers.start();
 
         // the GUI is checked before anything can be uploaded, so a broken one stops the start-up
-        WebServer web(library, queue, workers, activity, frontendDir);
+        WebServer web(library, queue, workers, activity, frontendDir, tls);
         if (!web.bind(httpPort)) {
-            throw runtime_error("could not listen for HTTP on port " + to_string(httpPort) + ", is something else using it?");
+            throw runtime_error("could not listen for HTTPS on port " + to_string(httpPort) + ", is something else using it?");
         }
 
         UploadService service(queue, dedup, activity, tempDir, maxUploadBytes);
         grpc::ServerBuilder builder;
         const string grpcAddress = "0.0.0.0:" + to_string(grpcPort);
         int boundPort = 0;
-        builder.AddListeningPort(grpcAddress, grpc::InsecureServerCredentials(), &boundPort);
+        // producers check this certificate against mkcert's certificate authority, and that it is for "consumer"
+        grpc::SslServerCredentialsOptions tlsOptions;
+        tlsOptions.pem_key_cert_pairs.push_back({tls.privateKeyPem, tls.certificatePem});
+        builder.AddListeningPort(grpcAddress, grpc::SslServerCredentials(tlsOptions), &boundPort);
         builder.RegisterService(&service);
 
         // A producer that freezes or loses its network never closes its stream and would
@@ -164,7 +171,9 @@ int main() {
 
         unique_ptr<grpc::Server> grpcServer = builder.BuildAndStart();
         if (!grpcServer || boundPort == 0) {
-            throw runtime_error("could not listen for gRPC on " + grpcAddress + ", is something else using it?");
+            // the certificate and key were checked as a pair above, so what's left is the port or gRPC's own TLS set-up
+            throw runtime_error("could not listen for gRPC with TLS on " + grpcAddress +
+                                ", is something else using it? If not, gRPC's own message above says what it refused");
         }
 
         thread webThread([&] {
@@ -185,7 +194,7 @@ int main() {
         StopWebServer stopWeb{web, webThread};
 
         logLine("ready: " + to_string(consumerThreads) + " consumer thread(s), queue length " + to_string(queueCapacity) +
-                ", gRPC on " + to_string(grpcPort) + ", GUI on http://localhost:" + to_string(httpPort));
+                ", gRPC with TLS on " + to_string(grpcPort) + ", GUI on https://localhost:" + to_string(httpPort));
 
         int signalNumber = 0;
         const int waitError = sigwait(&stopSignals, &signalNumber);

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <exception>
 #include <fstream>
 #include <memory>
@@ -11,6 +12,8 @@
 #include <system_error>
 
 #include <nlohmann/json.hpp>
+#include <openssl/err.h>
+#include <openssl/ssl.h>
 
 #include "error_text.h"
 
@@ -87,11 +90,91 @@ void sendFile(httplib::Response& response, const fs::path& path, const char* con
         });
 }
 
+string handshakeAdvice(int reason) {
+    switch (reason) {
+        case SSL_R_HTTP_REQUEST:
+            return "it asked for http://, and the GUI only answers https://";
+        case SSL_R_TLSV1_ALERT_UNKNOWN_CA:
+        case SSL_R_SSLV3_ALERT_CERTIFICATE_UNKNOWN:
+        case SSL_R_SSLV3_ALERT_BAD_CERTIFICATE:
+            return "the browser refused the certificate. Either mkcert's certificate authority is not trusted on that "
+                   "computer (run.bat or run.sh adds it with mkcert -install), or the address used is not localhost or 127.0.0.1";
+        case SSL_R_UNEXPECTED_EOF_WHILE_READING:
+            // only reached once the browser has sent something, see reportFailedHandshake
+            return "the browser hung up part way through. Some (Windows' own TLS, which curl uses there, for one) do that "
+                   "instead of saying why when they don't trust the certificate, so check mkcert's certificate authority "
+                   "is trusted on that computer";
+        case SSL_R_NO_SHARED_CIPHER:
+        case SSL_R_UNSUPPORTED_PROTOCOL:
+            return "the browser and the consumer have no TLS version or cipher in common";
+        default:
+            return "for the reason OpenSSL gives";
+    }
+}
+
+// OpenSSL calls this as each TLS handshake moves along. cpp-httplib closes a
+// connection whose handshake failed without saying anything, so this says why.
+void reportFailedHandshake(const SSL* ssl, int where, int ret) {
+    // this runs inside OpenSSL's C code, which an exception must not pass through
+    try {
+        if ((where & SSL_CB_HANDSHAKE_START) != 0) {
+            // OpenSSL's error queue belongs to the thread, and a connection this thread
+            // served before may have left errors in it that have nothing to do with this one
+            ERR_clear_error();
+            return;
+        }
+        if ((where & SSL_CB_ACCEPT_EXIT) != SSL_CB_ACCEPT_EXIT || ret > 0) return;
+
+        const unsigned long error = ERR_peek_last_error();
+        if (error == 0) {
+            // cpp-httplib's sockets don't block, so the handshake stops each time it waits for the browser
+            if (SSL_want_read(ssl) || SSL_want_write(ssl)) return;
+            logLine("GUI: a browser's connection broke during the TLS handshake, OpenSSL gave no reason");
+            return;
+        }
+        if (ERR_GET_REASON(error) == SSL_R_UNEXPECTED_EOF_WHILE_READING && SSL_get_state(ssl) == TLS_ST_BEFORE) {
+            // Closed before sending anything. Browsers open spare connections ahead of
+            // time and close the ones they don't need, so this is not a failure.
+            return;
+        }
+
+        char text[256];
+        ERR_error_string_n(error, text, sizeof(text));  // peeked, not taken: cpp-httplib still reads the queue after this
+        logLine("GUI: a browser's TLS handshake failed, " + handshakeAdvice(ERR_GET_REASON(error)) + " (OpenSSL: " + text + ")");
+    } catch (...) {
+        // only building the message can throw (out of memory), and logLine reports its own failed writes
+        fputs("[consumer] GUI: a browser's TLS handshake failed, and there wasn't the memory to say why\n", stderr);
+    }
+}
+
 }  // namespace
 
 WebServer::WebServer(VideoLibrary& library, LeakyBucketQueue<UploadJob>& queue, VideoWorkerPool& workers, Activity& activity,
-                     const fs::path& frontendDir)
-    : library_(library), queue_(queue), workers_(workers), activity_(activity) {
+                     const fs::path& frontendDir, const ServerTls& tls)
+    : library_(library),
+      queue_(queue),
+      workers_(workers),
+      activity_(activity),
+      server_([this, &tls](SSL_CTX& context) {
+          // cpp-httplib only learns true or false from here, so the reason is kept for the constructor to report
+          try {
+              useCertificateAndKey(context, tls.certificatePem, tls.privateKeyPem, tls.certificateWhat, tls.keyWhat);
+              if (SSL_CTX_set_min_proto_version(&context, TLS1_2_VERSION) != 1) {
+                  throw runtime_error("OpenSSL refused TLS 1.2 as the oldest version allowed: " + openSslErrors());
+              }
+              SSL_CTX_set_options(&context, SSL_OP_NO_COMPRESSION | SSL_OP_NO_RENEGOTIATION);
+              SSL_CTX_set_info_callback(&context, reportFailedHandshake);
+              return true;
+          } catch (const exception& error) {
+              tlsProblem_ = error.what();
+              return false;
+          }
+      }) {
+    if (!server_.is_valid()) {
+        throw runtime_error("could not set up HTTPS for the GUI: " +
+                            (tlsProblem_.empty() ? "OpenSSL could not create a TLS context: " + openSslErrors() : tlsProblem_));
+    }
+
     server_.new_task_queue = [] { return new httplib::ThreadPool(webThreads); };
 
     // without this cpp-httplib answers 500 and nothing records why

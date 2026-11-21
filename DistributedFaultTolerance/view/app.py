@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import jwt
+from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from flask import Flask, abort, flash, g, redirect, render_template, request, url_for
 from werkzeug.exceptions import HTTPException, RequestEntityTooLarge
@@ -72,7 +73,26 @@ except OSError as _exc:
 except ValueError as _exc:
     _startup_failure(f"{_key_path} is not a PEM public key ({_exc})")
 
-backend = Backend({name: _setting(spec.env) for name, spec in NODES.items()}, RPC_TIMEOUT)
+# mkcert's certificate authority (its certificate only). Every node's gRPC certificate must be
+# signed by it and be for the name the view dials, or the view refuses to talk to that node.
+_ca_path = _setting("GRPC_CA_FILE", "/ca/ca.pem")
+if os.path.isdir(_ca_path):
+    # Docker Desktop mounts a missing file as an empty folder it makes in its place
+    _startup_failure(f"{_ca_path} is a folder, not a file. Docker makes an empty folder in place of a file it "
+                     "was told to mount that didn't exist yet; run.bat or run.sh makes the real one with mkcert.")
+try:
+    with open(_ca_path, "rb") as _f:
+        _ca_pem = _f.read()
+except FileNotFoundError:
+    _startup_failure(f"{_ca_path} does not exist (run.bat or run.sh makes it with mkcert)")
+except OSError as _exc:
+    _startup_failure(f"could not read {_ca_path}: {_exc.strerror}")
+try:
+    x509.load_pem_x509_certificates(_ca_pem)
+except ValueError as _exc:
+    _startup_failure(f"{_ca_path} is not a PEM certificate ({_exc})")
+
+backend = Backend({name: _setting(spec.env) for name, spec in NODES.items()}, RPC_TIMEOUT, _ca_pem)
 
 
 # ---- reading the session token ------------------------------------------------------------------
@@ -107,6 +127,10 @@ app = Flask(__name__)
 app.secret_key = secrets.token_bytes(32)
 app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+# The site is only served over HTTPS (gunicorn, with mkcert's certificate), so the browser is told
+# never to send either cookie over plain HTTP. No HSTS header: it would apply to every port on
+# localhost, and other projects there still use http://.
+app.config["SESSION_COOKIE_SECURE"] = True
 
 
 class SignedOut(Exception):
@@ -189,7 +213,7 @@ def before_request():
 @app.after_request
 def after_request(response):
     if g.get("drop_cookie"):
-        response.delete_cookie(COOKIE)
+        response.delete_cookie(COOKIE, secure=True, httponly=True, samesite="Lax")
     return response
 
 
@@ -254,7 +278,7 @@ def login():
     reply = result.reply
     response = redirect(nxt or url_for("home"))
     response.set_cookie(COOKIE, reply.token, max_age=max(0, reply.expires_at - int(time.time())),
-                        httponly=True, samesite="Lax")
+                        httponly=True, secure=True, samesite="Lax")
     flash_ok(f"Signed in as {reply.user.full_name}.")
     return response
 
@@ -262,7 +286,7 @@ def login():
 @app.post("/logout")
 def logout():
     response = redirect(url_for("login_form"))
-    response.delete_cookie(COOKIE)
+    response.delete_cookie(COOKIE, secure=True, httponly=True, samesite="Lax")
     if g.token is None:
         return response
     result = backend.call("auth", "Logout", auth_pb2.LogoutRequest(), token=g.token)

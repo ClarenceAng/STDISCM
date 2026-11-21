@@ -24,7 +24,8 @@ import auth_pb2_grpc
 import common_pb2
 import enrollment_pb2
 import enrollment_pb2_grpc
-from common import config
+from common import config, tls
+from common.config import ConfigError
 
 TIMEOUT = 20
 
@@ -55,9 +56,15 @@ def main() -> None:
     if not 1 <= args.students <= 60:
         fail("--students must be from 1 to 60 (the demo data has student01..student60)")
 
-    auth = auth_pb2_grpc.AuthServiceStub(grpc.insecure_channel(config.text("AUTH_ADDR")))
-    admin = admin_pb2_grpc.AdminServiceStub(grpc.insecure_channel(config.text("ADMIN_ADDR")))
-    enrollment = enrollment_pb2_grpc.EnrollmentServiceStub(grpc.insecure_channel(config.text("ENROLLMENT_ADDR")))
+    # the same TLS as the view: the nodes' certificates are checked against mkcert's authority
+    try:
+        credentials = tls.channel_credentials()
+        auth_addr, admin_addr, enrollment_addr = (config.text(name) for name in ("AUTH_ADDR", "ADMIN_ADDR", "ENROLLMENT_ADDR"))
+    except ConfigError as exc:
+        fail(str(exc))
+    auth = auth_pb2_grpc.AuthServiceStub(grpc.secure_channel(auth_addr, credentials))
+    admin = admin_pb2_grpc.AdminServiceStub(grpc.secure_channel(admin_addr, credentials))
+    enrollment = enrollment_pb2_grpc.EnrollmentServiceStub(grpc.secure_channel(enrollment_addr, credentials))
 
     admin_token = call("signing in as admin", auth.Login, auth_pb2.LoginRequest(username="admin", password="password")).token
     terms = call("listing terms", admin.ListTerms, common_pb2.ListTermsRequest(), metadata=bearer(admin_token)).terms

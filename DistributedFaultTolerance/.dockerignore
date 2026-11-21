@@ -5,3 +5,4 @@ run.bat
 run.sh
 docker-compose.yml
 **/__pycache__
+certs/

@@ -44,7 +44,7 @@ using namespace std;
 namespace fs = std::filesystem;
 
 const uint64_t grpcPort = 50051;
-const uint64_t httpPort = 8080;           // the browser GUI
+const uint64_t httpPort = 8080;           // the browser GUI, HTTPS only
 const uint64_t scanSeconds = 2;           // between looks at the folders, here and in each producer
 const string containerFolder = "/input";  // where a producer's folder appears inside its container
 const int consumerStartSeconds = 60;       // how long the consumer may take to start listening
@@ -54,6 +54,13 @@ const string mainFolderName = "videos";     // the main folder, next to config.t
 const string producerPrefix = "producer-";  // producer-1 ... producer-p, as services and as folders
 const string resultText = "result: ";       // a producer's line for each video it is done with, see producer/backend/src/main.cpp
 const int deepestFolder = 32;               // folders in the main folder deeper than this are left alone
+
+// Made by run.bat / run.sh with mkcert, next to config.txt. ca.pem is mkcert's certificate
+// authority (its certificate only, never its key), which the producers trust. The consumer's
+// certificate is for "consumer" (the name the producers dial) and "localhost" (the browser).
+const string certsFolderName = "certs";
+const string caFileName = "ca.pem";
+const string consumerCertsFolderName = "consumer";  // holds cert.pem and key.pem
 
 struct Setting {
     string key;
@@ -501,12 +508,18 @@ string composeText() {
          << "      QUEUE_CAPACITY: \"" << valueOf("q") << "\"\n"
          << "      GRPC_PORT: \"" << grpcPort << "\"\n"
          << "      HTTP_PORT: \"" << httpPort << "\"\n"
+         << "      TLS_CERT_FILE: /certs/cert.pem\n"
+         << "      TLS_KEY_FILE: /certs/key.pem\n"
          << "    ports:\n"
          << "      - \"" << httpPort << ":" << httpPort << "\"\n"
          << "    volumes:\n"
-         << "      - ./storage:/data\n";
+         << "      - ./storage:/data\n"
+         << "      - type: bind\n"
+         << "        source: " << composeString((rootFolder / certsFolderName / consumerCertsFolderName).u8string()) << "\n"
+         << "        target: /certs\n"
+         << "        read_only: true\n";
 
-    // each producer only sees its own folder, and only reads it
+    // each producer only sees its own folder, and only reads it; of the certificates it only sees the authority's
     for (size_t number = 1; number <= producers.size(); number++) {
         const string name = producerName(number);
         yaml << "\n  " << name << ":\n"
@@ -517,10 +530,15 @@ string composeText() {
              << "      CONSUMER_ADDRESS: \"consumer:" << grpcPort << "\"\n"
              << "      VIDEO_DIR: \"" << containerFolder << "\"\n"
              << "      SCAN_SECONDS: \"" << scanSeconds << "\"\n"
+             << "      TLS_CA_FILE: /certs/ca.pem\n"
              << "    volumes:\n"
              << "      - type: bind\n"
              << "        source: " << composeString(producers[number - 1].folder.u8string()) << "\n"
              << "        target: " << composeString(containerFolder) << "\n"
+             << "        read_only: true\n"
+             << "      - type: bind\n"
+             << "        source: " << composeString((rootFolder / certsFolderName / caFileName).u8string()) << "\n"
+             << "        target: /certs/ca.pem\n"
              << "        read_only: true\n";
     }
     return yaml.str();
@@ -640,7 +658,27 @@ void watchConsumer(const string& containerId) {
     }
 }
 
+// Docker would stop at a missing bind source with a message about mounts, so the
+// files are looked for here first. Whether they are valid the containers check.
+void checkCertificateFiles() {
+    const fs::path certs = rootFolder / certsFolderName;
+    const fs::path needed[] = {certs / caFileName, certs / consumerCertsFolderName / "cert.pem",
+                               certs / consumerCertsFolderName / "key.pem"};
+    for (const fs::path& file : needed) {
+        error_code error;
+        const bool isFile = fs::is_regular_file(file, error);
+        if (error && error != errc::no_such_file_or_directory) {
+            throw runtime_error("could not check " + file.u8string() + ": " + error.message());
+        }
+        if (!isFile) {
+            throw runtime_error(file.u8string() + " is missing. run.bat (or run.sh) makes the certificates with mkcert "
+                                "before it starts this program, so start the service with it.");
+        }
+    }
+}
+
 void startService() {
+    checkCertificateFiles();
     checkDocker();
     containersMayExist = true;
 
@@ -1227,7 +1265,7 @@ int main(int argc, char* argv[]) {
         }
 
         printLine("");
-        printLine("The service is running. GUI: http://localhost:" + to_string(httpPort));
+        printLine("The service is running. GUI: https://localhost:" + to_string(httpPort));
         printLine("Put videos, or folders of videos, in " + mainFolder.u8string());
         printLine("The scheduler moves each one into the folder of the producer with the fewest videos waiting, producer-1 to producer-" +
                   to_string(valueOf("p")) + ".");

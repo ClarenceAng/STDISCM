@@ -1,6 +1,6 @@
 # Distributed Fault Tolerance (Online Enrollment System)
 
-An online enrollment system split across nodes. Students sign in, see the courses offered, enroll in open sections and see their grades. Faculty upload grades. The registrar (admin) manages sections. Each feature runs on its own node, and the nodes talk to each other only over **gRPC**. When a node is down, only its own features stop working and the rest of the site keeps going.
+An online enrollment system split across nodes. Students sign in, see the courses offered, enroll in open sections and see their grades. Faculty upload grades. The registrar (admin) manages sections. Each feature runs on its own node, and the nodes talk to each other only over **gRPC**, encrypted with TLS. The site itself is HTTPS only. When a node is down, only its own features stop working and the rest of the site keeps going.
 
 Every node is a Docker container on one machine. The containers stand in for the separate machines in the specification.
 
@@ -10,7 +10,7 @@ The code is Python 3.12: Flask and Jinja for the web pages, grpcio between the n
 
 | Node | Port | Serves | MVC part |
 | --- | --- | --- | --- |
-| `view` | 8080 (published) | the web pages | **View**: Jinja templates; the Flask routes only turn HTTP into gRPC calls |
+| `view` | 8080 (published, HTTPS) | the web pages | **View**: Jinja templates; the Flask routes only turn HTTP into gRPC calls |
 | `auth` | 50051 | login, logout, signs session tokens | Controller + Model (users, sessions) |
 | `course` | 50052 | terms and the sections offered in them | Controller + Model (terms, courses, offerings) |
 | `enrollment` | 50053 | enroll, drop, my enrollments | Controller + Model (enrollments, seat counts) |
@@ -25,7 +25,7 @@ Each backend node keeps its controller in `controller.py` (the gRPC methods) and
 
 ```
 docker-compose.yml          every node, its port, settings and volumes
-run.bat, run.sh             build and start everything, then wait until the site and the databases are ready
+run.bat, run.sh             make the TLS certificates, build and start everything, then wait until the site and the databases are ready
 proto/                      the gRPC contracts, one file per node
   common.proto                messages shared by several nodes (Term, User, Offering)
 view/                       the view node
@@ -40,7 +40,8 @@ services/                   every backend node (one image; each node is started 
     hosts.py                    looks the database nodes' addresses up in the background
     sessions.py                 checks the session token on every request
     rpc.py                      the wrapper every gRPC method goes through
-    server.py                   starts a node: gRPC server, health service, pool statistics
+    server.py                   starts a node: gRPC server (TLS), health service, pool statistics
+    tls.py                      loads and checks a node's certificate, and the certificate authority callers trust
     initialize.py               the one-off setup container: signing keys, cluster-state volume
   auth/ course/ enrollment/ grade/ admin/    controller.py, model.py, __main__.py each
   dbmonitor/monitor.py        failover
@@ -50,9 +51,16 @@ database/                   the PostgreSQL nodes
   init/                       roles, schema and demo data, loaded the first time
 ```
 
+`certs/` is made by the run scripts and is not part of the source (see [Encryption](#encryption-https-and-tls)).
+
 ## Building and running
 
-You need **Docker** with Compose v2. On Windows, Docker Desktop must be running. Nothing else needs installing on the host, because everything is built inside the images. The first build downloads the base images and Python packages, which takes a few minutes.
+You need:
+
+- **Docker** with Compose v2. On Windows, Docker Desktop must be running.
+- **mkcert**, which makes the certificates. On Windows: `winget install FiloSottile.mkcert`, then open a new terminal. On macOS: `brew install mkcert`. On Linux, see [mkcert's page](https://github.com/FiloSottile/mkcert).
+
+Nothing else needs installing on the host, because everything is built inside the images. The first build downloads the base images and Python packages, which takes a few minutes.
 
 From this folder, run
 
@@ -66,11 +74,17 @@ or on Linux / macOS
 sh run.sh
 ```
 
-The script runs `docker compose up --build -d` and waits until the site answers and both databases are up and in sync (about 20 s after the build). Then open <http://localhost:8080>. To use another port, set `VIEW_PORT` first, for example `set VIEW_PORT=9090`.
+The script makes the certificates with mkcert, runs `docker compose up --build -d` and waits until the site answers and both databases are up and in sync (about 20 s after the build). Then open <https://localhost:8080>. To use another port, set `VIEW_PORT` first, for example `set VIEW_PORT=9090`.
 
-The same by hand:
+The first time, Windows asks whether to install a certificate from "mkcert ...". Answer **Yes**: that is mkcert's certificate authority, and it is what lets the browser trust the site.
+
+The same by hand (`run.bat` does the certificates the same way, see [Encryption](#encryption-https-and-tls)):
 
 ```sh
+mkcert -install                   # once: make the certificate authority and trust it
+cp "$(mkcert -CAROOT)/rootCA.pem" certs/ca.pem
+mkcert -cert-file certs/auth/cert.pem -key-file certs/auth/key.pem auth   # and so on for each node
+mkcert -cert-file certs/view/cert.pem -key-file certs/view/key.pem localhost 127.0.0.1 ::1 view
 docker compose up --build -d      # build and start every node
 docker compose ps                 # what is running
 docker compose logs -f enrollment # one node's log
@@ -89,6 +103,25 @@ Every password is `password`.
 | `admin` | the registrar |
 
 The term open for enrollment is AY 2026-2027 Term 2. STDISCM S12 has 3 seats with 2 taken, so one more student fills it. CSSECDV S11 is closed.
+
+## Encryption (HTTPS and TLS)
+
+The web pages and every gRPC link are encrypted with certificates from [mkcert](https://github.com/FiloSottile/mkcert), a tool that makes a certificate authority (CA) of your own and has this computer trust it.
+
+On every start, `run.bat` / `run.sh`:
+
+1. Runs `mkcert -install`. The first time, this makes the CA and adds it to the Windows trust store (Windows asks you to confirm). After that it does nothing. Only the system store is used (`TRUST_STORES=system`): Chrome and Edge read it, and mkcert's Java step would fail without admin rights.
+2. Copies the CA's certificate to `certs/ca.pem`. The CA's private key stays in mkcert's own folder (`mkcert -CAROOT`) and is never copied.
+3. Makes a new certificate signed by the CA for each node, for the name the view dials it by: `certs/auth/` for `auth`, `certs/course/` for `course`, and so on. The view's, in `certs/view/`, is for `localhost`, `127.0.0.1` and `::1`, which is what the browser opens.
+4. If `certs/ca.pem` was not the CA mkcert has now, recreates every node so each loads its new certificate. Otherwise running nodes keep the ones they loaded at start, which are signed by the same CA and still valid.
+
+Then:
+
+- **Browser to view (HTTPS).** gunicorn serves the site only as `https://localhost:8080`. The session cookie is `Secure`, so the browser never sends it over plain HTTP. There is no HSTS header: browsers would apply it to every port on `localhost`, and other projects there still use `http://`.
+- **View to nodes (gRPC over TLS).** Every backend node listens with its own certificate and key (`services/common/server.py`, `tls.py`). The view trusts only `certs/ca.pem`, and refuses a node unless its certificate is signed by that CA and is for the name in the node's address. `race-test` connects the same way.
+- Each node mounts only its own folder of `certs/`, read-only at `/tls`. `certs/` is in `.gitignore` and `.dockerignore`, so no key is committed or copied into an image.
+
+Before listening, each node checks that its certificate and key can be read and belong together, because gRPC itself only reports that a secure port failed.
 
 ## Taking nodes down
 
@@ -180,6 +213,12 @@ Every failure is reported with its reason: on the page, in the node's log (`dock
 | The standby is behind and the primary is down | the monitor doesn't promote it and the status page says why; reads still work from the standby |
 | The signing keys are missing or don't match | the setup container stops everything from starting and says how to fix it |
 | A required setting is missing or out of range | the node refuses to start and names the setting |
+| A node's certificate isn't signed by the CA in `certs/ca.pem` | "The view refused the Grade node's TLS certificate ... its certificate was not signed by mkcert's certificate authority ...", and **TLS refused** on the status page |
+| The node at an address shows a certificate for another name (Docker gave a stopped node's address to another, or the wrong certificate is in that node's folder) | the same, saying the certificate is for another name. A request that never got through is first retried on a fresh channel, which looks the name up again |
+| A node's certificate or key is missing, unreadable, not PEM, or the two don't belong together | the node refuses to start and says which file and why |
+| A certificate file is mounted as a folder (Docker Desktop makes an empty folder in place of a missing file) | the node says so and that run.bat makes the real one; run.bat removes such a `ca.pem` folder before copying |
+| mkcert isn't installed, or Windows' trust prompt was declined | `run.bat` says which and stops before starting anything |
+| The browser asks for `http://`, or doesn't trust the certificate | the browser shows its own error; the view's log names it, for example `[SSL: HTTP_REQUEST] http request` or `tlsv1 alert unknown ca` |
 
 ## Limitations
 
@@ -188,3 +227,6 @@ Every failure is reported with its reason: on the page, in the node's log (`dock
 - After the primary turns synchronous replication off because the standby was gone, the monitor has to be running to turn it back on.
 - A former primary rejoins by copying the whole database from the new primary, which is fine for this size of data.
 - The passwords in `docker-compose.yml` are demo values.
+- The view's certificate is for `localhost` only, so opening the site from another machine by this one's address gives a certificate warning. Add that address to the `mkcert` line for the view in `run.bat` to cover it. Another machine also has to trust this computer's mkcert CA.
+- TLS covers the web pages and gRPC, not the PostgreSQL connections between the backend nodes and the databases.
+- Nodes don't check who is calling them (no client certificates). Every request that needs a signed-in user carries the session token, which the node checks.

@@ -24,6 +24,8 @@ USER app
 
 EXPOSE 8080
 # One process, so the random key that signs flash messages is the same for every request
-# (see app.py); threads serve requests side by side.
+# (see app.py); threads serve requests side by side. HTTPS only, with the certificate run.bat /
+# run.sh make with mkcert, which docker-compose.yml mounts at /tls.
 CMD ["gunicorn", "--workers", "1", "--threads", "16", "--bind", "0.0.0.0:8080", \
+     "--certfile", "/tls/cert.pem", "--keyfile", "/tls/key.pem", \
      "--access-logfile", "-", "--timeout", "60", "app:app"]

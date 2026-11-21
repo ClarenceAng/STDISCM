@@ -2,7 +2,7 @@
 
 Simulates a media upload service. You put videos in one main folder, `videos/`. A **scheduler** hands each video to one of **p** producers by moving it into that producer's own subfolder. Each producer watches its folder and uploads whatever appears there over **gRPC** to a consumer. The consumer keeps uploads in a **leaky bucket queue** of length **q** and drops anything that doesn't fit. **c** consumer threads compress each video, cut a 10 second preview and save the result to a single folder. A browser GUI lists the uploaded videos, previews 10 seconds on hover and plays the full video on click.
 
-The services run in Docker containers: one container per producer, and one consumer container running the c threads. All of them start with the service and run until it stops. The command line program and its scheduler run on the host. The containers stand in for the separate virtual machines in the specification, and they only talk to each other over gRPC.
+The services run in Docker containers: one container per producer, and one consumer container running the c threads. All of them start with the service and run until it stops. The command line program and its scheduler run on the host. The containers stand in for the separate virtual machines in the specification, and they only talk to each other over gRPC, encrypted with TLS. The GUI is HTTPS only.
 
 The program is written in C++17. The only other code is the browser page (`consumer/frontend`) and the two short run scripts.
 
@@ -10,10 +10,11 @@ The program is written in C++17. The only other code is the browser page (`consu
 
 ```
 config.txt                  p, c and q
-run.bat, run.sh             build and start the command line program
+run.bat, run.sh             make the TLS certificates with mkcert, then build and start the command line program
 tools/upload_cli.cpp        the command line program and the scheduler: starts the containers, then moves new videos into the producers' folders
 proto/media_upload.proto    the gRPC contract between producer and consumer
-common/                     SHA-256 helper, the video file types, error messages and the CMake rule for the gRPC code
+common/                     SHA-256 helper, the video file types, error messages, the CMake rule for the gRPC code
+                            and tls_files.h, which reads and checks the TLS certificates
 producer/backend/           the producer
 consumer/backend/           the consumer
   leaky_bucket_queue.h        the bounded queue
@@ -22,11 +23,11 @@ consumer/backend/           the consumer
   video_worker.cpp            the c consumer threads, OpenCV compression and the preview
   av_mux.cpp                  copies the original audio into the compressed video (FFmpeg)
   video_library.cpp           the list of saved videos
-  web_server.cpp              serves the GUI, its API and the video files
+  web_server.cpp              serves the GUI, its API and the video files over HTTPS
 consumer/frontend/          the browser GUI
 ```
 
-These are created when it runs and are not part of the source: `docker-compose.yml`, `videos/` (the main folder, with the producers' folders inside it while the service runs) and `storage/` (the saved results).
+These are created when it runs and are not part of the source: `docker-compose.yml`, `videos/` (the main folder, with the producers' folders inside it while the service runs), `storage/` (the saved results) and `certs/` (see [Encryption](#encryption-https-and-tls)).
 
 ## Building and running
 
@@ -34,6 +35,7 @@ You need:
 
 - **Docker** with Compose v2. On Windows, Docker Desktop must be running.
 - **g++** with C++17 support on the PATH, which is only used for the small command line program. Everything else is compiled inside the Docker images, so gRPC, OpenCV and FFmpeg don't need to be installed.
+- **mkcert**, which makes the certificates. On Windows: `winget install FiloSottile.mkcert`, then open a new terminal. On macOS: `brew install mkcert`. On Linux, see [mkcert's page](https://github.com/FiloSottile/mkcert).
 - An internet connection for the first build, which takes several minutes.
 
 1. Set `p`, `c` and `q` in `config.txt`.
@@ -49,9 +51,11 @@ You need:
    sh run.sh
    ```
 
-   It builds the images, creates `videos/` with a folder for each producer, starts the consumer and the producers, and then keeps running and shows what happens. Nothing is typed into it.
+   It makes the certificates, builds the images, creates `videos/` with a folder for each producer, starts the consumer and the producers, and then keeps running and shows what happens. Nothing is typed into it.
 
-3. Open <http://localhost:8080>.
+   The first time, Windows asks whether to install a certificate from "mkcert ...". Answer **Yes**: that is mkcert's certificate authority, and it is what lets the browser trust the GUI.
+
+3. Open <https://localhost:8080>.
 4. Copy or drag videos, or folders of videos, into `videos/`, at any time and as many as you like:
 
    ```
@@ -67,9 +71,12 @@ You need:
 
    On Windows, `run.bat` then asks `Terminate batch job (Y/N)?`. Either answer is fine, because everything has already been stopped by then.
 
-The script does these steps, which can also be run by hand:
+The script does these steps, which can also be run by hand (the certificates are explained under [Encryption](#encryption-https-and-tls)):
 
 ```bat
+mkcert -install
+copy "<the folder mkcert -CAROOT names>\rootCA.pem" certs\ca.pem
+mkcert -cert-file certs\consumer\cert.pem -key-file certs\consumer\key.pem consumer localhost 127.0.0.1 ::1
 g++ -std=c++17 -O2 -Wall -Wextra -pthread -static tools\upload_cli.cpp -o tools\upload_cli.exe
 tools\upload_cli.exe config.txt docker-compose.yml
 ```
@@ -110,10 +117,28 @@ Everything else is fixed:
 
 | | Value |
 | --- | --- |
-| GUI port | 8080 |
+| GUI port | 8080, HTTPS only |
 | Videos taller than this are scaled down | 480 pixels |
 | Time between looks at the main folder and at each producer's folder | 2 seconds |
 | Largest video accepted | 2048 MB |
+
+## Encryption (HTTPS and TLS)
+
+Both network links are encrypted with certificates from [mkcert](https://github.com/FiloSottile/mkcert), a tool that makes a certificate authority (CA) of your own and has this computer trust it.
+
+On every start, `run.bat` / `run.sh`:
+
+1. Runs `mkcert -install`. The first time, this makes the CA and adds it to the Windows trust store (Windows asks you to confirm). After that it does nothing. Only the system store is used (`TRUST_STORES=system`): Chrome and Edge read it, and mkcert's Java step would fail without admin rights.
+2. Copies the CA's certificate to `certs/ca.pem`. The CA's private key stays in mkcert's own folder (`mkcert -CAROOT`) and is never copied.
+3. Makes a new certificate signed by the CA for the consumer, in `certs/consumer/`, for the names `consumer` (what the producers dial), `localhost`, `127.0.0.1` and `::1` (what the browser opens).
+
+Then:
+
+- **Browser to consumer (HTTPS).** The GUI is only served as `https://localhost:8080` (cpp-httplib's `SSLServer`, TLS 1.2 or newer). Chrome and Edge trust it with no warning. A browser that asks for plain `http://` gets no page.
+- **Producers to consumer (gRPC over TLS).** Each producer has only `certs/ca.pem`, and refuses the consumer unless its certificate is signed by that CA and is for `consumer`. The consumer uses the same certificate and key for both ports, read once at start-up.
+- The consumer mounts `certs/consumer/` read-only, and each producer mounts only `certs/ca.pem`. `certs/` is in `.gitignore` and `.dockerignore`, so the key is never committed or copied into an image.
+
+Before listening, the consumer checks that its certificate and key can be read and belong together, because gRPC itself only reports that a secure port failed. cpp-httplib closes a connection whose handshake failed without saying anything, so the consumer reports those itself (`web_server.cpp`, `reportFailedHandshake`).
 
 ## How a video moves through the system
 
@@ -150,7 +175,13 @@ Every failure is reported with its reason in the window, in the GUI's recent act
 | A video is taken out of a producer's folder before it is sent | The producer reports it as failed, and the scheduler stops counting it as waiting |
 | A file in a producer's folder isn't a supported video | The producer logs it once and carries on with the rest |
 | A file can't be read, or the connection drops | The producer tries that file 5 times, then reports it as failed and carries on with the rest |
-| The consumer can't be reached | Producers keep trying and say so every minute |
+| The consumer can't be reached | Producers keep trying and say why, again whenever the reason changes and every minute |
+| The consumer's certificate isn't signed by the CA in `certs/ca.pem`, or isn't for `consumer` | Producers say "the consumer's TLS certificate was refused" with gRPC's reason (`certificate verify failed`, or `Peer name ... is not in peer certificate`) and keep trying |
+| mkcert isn't installed, or Windows' trust prompt was declined | `run.bat` says which and stops before starting anything |
+| `certs/` is missing a file, for example because `upload_cli` was started without the script | The window names the file and says to start with `run.bat`, before any container starts |
+| The consumer's certificate or key can't be read, isn't PEM, or the two don't belong together | The consumer refuses to start and says which file and why |
+| A producer's `ca.pem` can't be read or holds no certificate | That producer stops and says why |
+| A browser asks for `http://`, or refuses the certificate | The browser shows its own error, and the consumer's log says which, for example "it asked for http://" or "the browser refused the certificate" with OpenSSL's reason |
 | A run ended without clearing up and `p` was lowered since, so a producer folder past it still holds videos | The window says so at start-up. No producer reads that folder, and when the service stops its videos go back into `videos/` and the folder is removed |
 | A producer or the consumer freezes or loses its network | Connection pings notice within about 30 seconds, and the upload is cancelled so its queue slot comes back |
 | A transfer stays slower than 256 KB/s on average | The deadline cancels it, so it can't hold a queue slot for ever |
@@ -186,3 +217,4 @@ Every failure is reported with its reason in the window, in the GUI's recent act
 - A video with a variable frame rate is written at a constant rate, so its sound can drift slightly from the picture.
 - Compressing a video that isn't H.264 can make it larger, because it still has to be converted for browsers to play it.
 - Docker Desktop runs all of the containers inside one virtual machine on the host.
+- The consumer's certificate is for `localhost` only, so opening the GUI from another machine by this one's address gives a certificate warning. Add that address to the `mkcert` line in `run.bat` to cover it. Another machine also has to trust this computer's mkcert CA.
