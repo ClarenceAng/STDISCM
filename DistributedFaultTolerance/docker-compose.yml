@@ -110,12 +110,8 @@ services:
       STATE_FILE: /cluster-state/primary
     volumes:
       - cluster-state:/cluster-state
-      - type: bind
-        source: ./certs/dbmonitor
-        target: /tls
-        read_only: true
-        bind:
-          create_host_path: false
+      - ./certs/dbmonitor:/tls:ro,z
+      - ./certs/ca.pem:/ca/ca.pem:ro,z
 
   auth:
     <<: *node
@@ -128,12 +124,8 @@ services:
     volumes:
       - public-key:/keys/public:ro
       - auth-private-key:/keys/private:ro
-      - type: bind
-        source: ./certs/auth
-        target: /tls
-        read_only: true
-        bind:
-          create_host_path: false
+      - ./certs/auth:/tls:ro,z
+      - ./certs/ca.pem:/ca/ca.pem:ro,z
 
   course:
     <<: *node
@@ -143,12 +135,8 @@ services:
       GRPC_PORT: "50052"
     volumes:
       - public-key:/keys/public:ro
-      - type: bind
-        source: ./certs/course
-        target: /tls
-        read_only: true
-        bind:
-          create_host_path: false
+      - ./certs/course:/tls:ro,z
+      - ./certs/ca.pem:/ca/ca.pem:ro,z
 
   enrollment:
     <<: *node
@@ -158,12 +146,8 @@ services:
       GRPC_PORT: "50053"
     volumes:
       - public-key:/keys/public:ro
-      - type: bind
-        source: ./certs/enrollment
-        target: /tls
-        read_only: true
-        bind:
-          create_host_path: false
+      - ./certs/enrollment:/tls:ro,z
+      - ./certs/ca.pem:/ca/ca.pem:ro,z
 
   grade:
     <<: *node
@@ -173,12 +157,8 @@ services:
       GRPC_PORT: "50054"
     volumes:
       - public-key:/keys/public:ro
-      - type: bind
-        source: ./certs/grade
-        target: /tls
-        read_only: true
-        bind:
-          create_host_path: false
+      - ./certs/grade:/tls:ro,z
+      - ./certs/ca.pem:/ca/ca.pem:ro,z
 
   admin:
     <<: *node
@@ -188,12 +168,8 @@ services:
       GRPC_PORT: "50055"
     volumes:
       - public-key:/keys/public:ro
-      - type: bind
-        source: ./certs/admin
-        target: /tls
-        read_only: true
-        bind:
-          create_host_path: false
+      - ./certs/admin:/tls:ro,z
+      - ./certs/ca.pem:/ca/ca.pem:ro,z
 
   view:
     build:
@@ -220,18 +196,8 @@ services:
     # gunicorn serves HTTPS with certs/view (for localhost), see view/Dockerfile
     volumes:
       - public-key:/keys/public:ro
-      - type: bind
-        source: ./certs/view
-        target: /tls
-        read_only: true
-        bind:
-          create_host_path: false
-      - type: bind
-        source: ./certs/ca.pem
-        target: /ca/ca.pem
-        read_only: true
-        bind:
-          create_host_path: false
+      - ./certs/view:/tls:ro,z
+      - ./certs/ca.pem:/ca/ca.pem:ro,z
 
   # Not started by `up`. Run it with: docker compose run --rm race-test
   race-test:
